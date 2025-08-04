@@ -1,0 +1,22 @@
+name: Check
+'on':
+  - push
+  - pull_request
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+      - name: Install Python dependencies
+        run: pip install -r requirements-check.txt
+      - name: Install Node.js dependencies
+        working-directory: js
+        run: npm install
+      - name: Run checks
+        working-directory: sh
+        run: ./check_code.sh
