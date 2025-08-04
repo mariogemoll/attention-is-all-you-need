@@ -75,9 +75,14 @@ function checkMarkdownCells(nbPath, nb) {
 
     if (result[`cell_${index}`] && result[`cell_${index}`].length > 0) {
       result[`cell_${index}`].forEach(error => {
+        // Get the specific line that has the error
+        const lines = markdownContent.split('\n');
+        const errorLine = lines[error.lineNumber - 1] || '';
+
         errors.push(
           `Markdown cell ${index + 1}: ${error.ruleDescription} ` +
-            `(${error.ruleNames.join('/')}) at line ${error.lineNumber}`
+            `(${error.ruleNames.join('/')}) at line ${error.lineNumber}\n` +
+            `  Text: "${errorLine}"`
         );
       });
     }

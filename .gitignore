@@ -2,4 +2,10 @@
 .python-version
 node_modules
 package-lock.json
-
+/0_download/*.de
+/0_download/*.en
+/0_download/*.sgm
+/1_input/*.txt
+/tmp/*.de
+/tmp/*.en
+/tmp/*.sgm
