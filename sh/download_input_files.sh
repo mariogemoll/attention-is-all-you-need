@@ -3,7 +3,8 @@ set -e
 
 # Store directory the script is in
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-DOWNLOAD_DIR=$SCRIPT_DIR/../0_download
+
+DOWNLOAD_DIR=$SCRIPT_DIR/../1_input
 
 # Create a temporary directory with a random name under /tmp
 TMP_DIR=$(mktemp -d /tmp/download.XXXXXX)
