@@ -13,6 +13,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install Python dependencies
+        working-directory: py
         run: pip install -r requirements-check.txt
       - name: Install Node.js dependencies
         working-directory: js
