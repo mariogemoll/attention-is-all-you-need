@@ -3,4 +3,5 @@ flake8>=7,<8
 isort>=6,<7
 mypy>=1,<2
 nbqa>=1,<2
+types-tabulate>=0.9,<1
 types-tqdm>=4,<5

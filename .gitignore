@@ -10,6 +10,13 @@ package-lock.json
 /1_input/processed/*.sgm
 /2_clean/*.de
 /2_clean/*.en
+/3_tokenizer/tokenizer.json
+/4_tokens/*.bin
+/4_tokens/*.idx
+/py/seqs_pb2.py
+/py/seqs_pb2.pyi
+/tmp/*.bin
 /tmp/*.de
 /tmp/*.en
+/tmp/*.idx
 /tmp/*.sgm

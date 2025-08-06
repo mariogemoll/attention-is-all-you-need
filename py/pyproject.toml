@@ -1,10 +1,10 @@
 [tool.black]
 line-length = 100
-exclude = "widget-wrappers/node_modules"
 
 [tool.isort]
 profile = "black"
 line_length = 100
+skip = ["seqs_pb2.py", "seqs_pb2.pyi"]
 
 [tool.nbqa.addopts]
 flake8 = [

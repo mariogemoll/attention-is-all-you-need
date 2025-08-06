@@ -18,11 +18,11 @@ cd $SCRIPT_DIR/../py
 
 flake8 --show-source *.py
 
-isort --check-only --diff *.py
+isort --check-only --diff .
 
-black --check --diff *.py
+black --check --diff --force-exclude 'seqs_pb2\.(py|pyi)$|\.ipynb$' .
 
-mypy --strict --pretty *.py
+mypy --strict --pretty .
 
 nbqa flake8 --show-source *.ipynb
 
