@@ -37,12 +37,18 @@ def decode(tokenizer: tokenizers.Tokenizer, token: int) -> str:
         return tokenizer.decode([token])  # type: ignore
 
 
+def pretty_print_tokens(
+    tokenizer: tokenizers.Tokenizer, tokens: list[int], chunk_size: int = 20
+) -> None:
+    """Print tokens in a readable format."""
+    rows = [tokens[i : i + chunk_size] for i in range(0, len(tokens), chunk_size)]
+    for tokens_chunk in rows:
+        print(tabulate([[decode(tokenizer, token) for token in tokens_chunk], tokens_chunk]))
+
+
 def test_tokenizer(tokenizer: tokenizers.Tokenizer, text: str) -> None:
     tokens = tokenizer.encode(text).ids
-    # Split tokens into chunks of 30
-    rows = [tokens[i : i + 30] for i in range(0, len(tokens), 30)]
-    for tokens in rows:
-        print(tabulate([[decode(tokenizer, token) for token in tokens], tokens]))
+    pretty_print_tokens(tokenizer, tokens)
     print()
 
 

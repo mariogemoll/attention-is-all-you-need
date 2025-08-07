@@ -12,10 +12,12 @@ package-lock.json
 /2_clean/*.en
 /3_tokenizer/tokenizer.json
 /4_tokens/*.bin
+/4_tokens/*.cidx
 /4_tokens/*.idx
 /py/seqs_pb2.py
 /py/seqs_pb2.pyi
 /tmp/*.bin
+/tmp/*.cidx
 /tmp/*.de
 /tmp/*.en
 /tmp/*.idx
