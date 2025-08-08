@@ -1,5 +1,6 @@
 .ipynb_checkpoints
 .python-version
+__pycache__
 node_modules
 package-lock.json
 /1_input/*.de
@@ -14,6 +15,8 @@ package-lock.json
 /4_tokens/*.bin
 /4_tokens/*.cidx
 /4_tokens/*.idx
+/.claude
+/CLAUDE.md
 /py/seqs_pb2.py
 /py/seqs_pb2.pyi
 /tmp/*.bin
