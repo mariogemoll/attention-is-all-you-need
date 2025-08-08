@@ -1,3 +1,4 @@
+import multiprocessing
 import os
 import random
 import struct
@@ -5,6 +6,7 @@ from functools import partial
 from multiprocessing import Pool
 from typing import BinaryIO
 
+from tabulate import tabulate
 from tqdm import tqdm, trange
 
 
@@ -238,6 +240,35 @@ def read_from_data_file(
     return corpus_id, original_line_number, src_tokens, tgt_tokens
 
 
+def get_entry(
+    index_file: BinaryIO, data_file: BinaryIO, data_file_size: int, entry_idx: int
+) -> tuple[int, int, list[int], list[int]]:
+    """
+    Get a complete entry from the dataset by reading both index and data files.
+
+    Args:
+        index_file: Open binary file handle for reading index
+        data_file: Open binary file handle for reading data
+        entry_idx: Index of the entry to read
+
+    Returns:
+        Tuple of (corpus_id, original_line_number, src_tokens, tgt_tokens)
+    """
+    entry_start_pos, src_token_count, tgt_token_count = get_entry_info_from_index(
+        index_file, data_file_size, entry_idx
+    )
+    return read_from_data_file(data_file, entry_start_pos, src_token_count, tgt_token_count)
+
+
+def get_entries(
+    index_file: BinaryIO, data_file: BinaryIO, data_file_size: int, entry_indices: list[int]
+) -> list[tuple[int, int, list[int], list[int]]]:
+    """
+    Get multiple entries from the dataset by reading both index and data files.
+    """
+    return [get_entry(index_file, data_file, data_file_size, idx) for idx in entry_indices]
+
+
 def _process_index_chunk(
     data_file_path: str,
     index_file_path: str,
@@ -343,8 +374,6 @@ def create_bucket_index(
 
     # Determine number of processes
     if num_processes is None:
-        import multiprocessing
-
         num_processes = multiprocessing.cpu_count()
 
     # Parallel processing
@@ -413,38 +442,43 @@ def create_bucket_index(
     return total_entries
 
 
-def read_bucket_index_header(bucket_index_path: str) -> tuple[int, int, list[int]]:
+def read_bucket_index_header(
+    bucket_index_file: BinaryIO,
+) -> tuple[int, int, list[int]]:
     """
     Read the header of a bucket index file to get bucket information.
 
     Args:
-        bucket_index_path: Path to the bucket index file (.bidx)
+        bucket_index_file: Open binary file handle for reading bucket index
 
     Returns:
         Tuple of (step_size, num_buckets, bucket_offsets)
     """
-    with open(bucket_index_path, "rb") as f:
-        step_size = struct.unpack("<I", f.read(4))[0]
-        num_buckets = struct.unpack("<I", f.read(4))[0]
-        bucket_offsets = []
-        for _ in range(num_buckets):
-            offset = struct.unpack("<I", f.read(4))[0]
-            bucket_offsets.append(offset)
+    bucket_index_file.seek(0)
+    step_size = struct.unpack("<I", bucket_index_file.read(4))[0]
+    num_buckets = struct.unpack("<I", bucket_index_file.read(4))[0]
+    bucket_offsets = []
+
+    for _ in range(num_buckets):
+        offset = struct.unpack("<I", bucket_index_file.read(4))[0]
+        bucket_offsets.append(offset)
 
     return step_size, num_buckets, bucket_offsets
 
 
-def get_bucket_sizes(bucket_index_path: str) -> list[int]:
+def get_bucket_sizes(
+    bucket_index_file: BinaryIO,
+) -> list[int]:
     """
-    Get the number of entries in each bucket without reading the actual indices.
+    Get the number of entries in each bucket from an opened bucket index file.
 
     Args:
-        bucket_index_path: Path to the bucket index file (.bidx)
+        bucket_index_file: Open binary file handle for reading bucket index
 
     Returns:
         List of entry counts for each bucket
     """
-    step_size, num_buckets, bucket_offsets = read_bucket_index_header(bucket_index_path)
+    step_size, num_buckets, bucket_offsets = read_bucket_index_header(bucket_index_file)
 
     bucket_sizes = []
     for i in range(num_buckets):
@@ -453,8 +487,9 @@ def get_bucket_sizes(bucket_index_path: str) -> list[int]:
 
         if end_offset is None:
             # Last bucket - need to check file size
-            file_size = os.path.getsize(bucket_index_path)
-            bucket_byte_size = file_size - start_offset
+            current_pos = bucket_index_file.tell()
+            bucket_byte_size = os.path.getsize(bucket_index_file.name) - start_offset
+            bucket_index_file.seek(current_pos)
         else:
             bucket_byte_size = end_offset - start_offset
 
@@ -472,11 +507,11 @@ def print_bucket_summary(bucket_index_path: str) -> None:
     Args:
         bucket_index_path: Path to the bucket index file (.bidx)
     """
-    from tabulate import tabulate
 
-    step_size, num_buckets, bucket_offsets = read_bucket_index_header(bucket_index_path)
-    bucket_sizes = get_bucket_sizes(bucket_index_path)
-    total_entries = sum(bucket_sizes)
+    with open(bucket_index_path, "rb") as bucket_index_file:
+        step_size, num_buckets, bucket_offsets = read_bucket_index_header(bucket_index_file)
+        bucket_sizes = get_bucket_sizes(bucket_index_file)
+        total_entries = sum(bucket_sizes)
 
     print(f"Bucket summary for {bucket_index_path}:")
     print(f"Total entries: {total_entries:,}")

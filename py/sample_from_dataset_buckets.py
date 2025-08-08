@@ -3,6 +3,7 @@ import sys
 
 import tokenizers  # type: ignore
 
+from data import open_buckets
 from serialization import (
     get_bucket_sizes,
     get_entry_idx_from_bucket,
@@ -20,22 +21,21 @@ def main() -> None:
     dataset_file_path_prefix = sys.argv[2]
     num_samples = int(sys.argv[3])
 
-    bucket_sizes = get_bucket_sizes(dataset_file_path_prefix + ".bidx")
-
-    num_buckets = len(bucket_sizes)
-    if num_buckets == 0:
-        print("No buckets found in the dataset index.")
-        sys.exit(1)
-
     tokenizer = tokenizers.Tokenizer.from_file(tokenizer_path)
-    with open(dataset_file_path_prefix + ".bidx", "rb") as bucket_file, open(
-        dataset_file_path_prefix + ".idx", "rb"
-    ) as index_file, open(dataset_file_path_prefix + ".bin", "rb") as data_file:
 
-        # Get data file length
-        data_file.seek(0, 2)  # Seek to end
-        data_file_len = data_file.tell()
-        data_file.seek(0)  # Reset to start
+    with open_buckets(dataset_file_path_prefix) as (
+        bucket_file,
+        index_file,
+        data_file,
+        data_file_len,
+    ):
+
+        bucket_sizes = get_bucket_sizes(bucket_file)
+
+        num_buckets = len(bucket_sizes)
+        if num_buckets == 0:
+            print("No buckets found in the dataset index.")
+            sys.exit(1)
 
         for i in range(num_samples):
             print()
