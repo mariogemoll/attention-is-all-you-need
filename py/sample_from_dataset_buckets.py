@@ -20,7 +20,7 @@ def main() -> None:
     dataset_file_path_prefix = sys.argv[2]
     num_samples = int(sys.argv[3])
 
-    bucket_sizes = get_bucket_sizes(dataset_file_path_prefix + ".cidx")
+    bucket_sizes = get_bucket_sizes(dataset_file_path_prefix + ".bidx")
 
     num_buckets = len(bucket_sizes)
     if num_buckets == 0:
@@ -28,7 +28,7 @@ def main() -> None:
         sys.exit(1)
 
     tokenizer = tokenizers.Tokenizer.from_file(tokenizer_path)
-    with open(dataset_file_path_prefix + ".cidx", "rb") as bucket_file, open(
+    with open(dataset_file_path_prefix + ".bidx", "rb") as bucket_file, open(
         dataset_file_path_prefix + ".idx", "rb"
     ) as index_file, open(dataset_file_path_prefix + ".bin", "rb") as data_file:
 

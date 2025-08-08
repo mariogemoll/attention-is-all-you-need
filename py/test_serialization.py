@@ -6,7 +6,7 @@ import tempfile
 from serialization import (
     append_to_dataset,
     combine_datasets,
-    create_chunked_index,
+    create_bucket_index,
     get_entry_idx_from_bucket,
     get_entry_info_from_index,
     get_number_of_entries,
@@ -560,27 +560,27 @@ def test_get_entry_idx_from_bucket_basic() -> None:
                 data_file, index_file, 5, 500, [90] * 35, [100] * 40
             )  # max=40 -> bucket 2
 
-        # Create chunked index
-        create_chunked_index(dataset_path, step_size=16, max_length=64)
+        # Create bucket index
+        create_bucket_index(dataset_path, step_size=16, max_length=64)
 
         # Test reading from buckets
-        with open(dataset_path + ".cidx", "rb") as chunked_file:
+        with open(dataset_path + ".bidx", "rb") as bucket_file:
             # Bucket 0 should have entries 0 and 1
-            entry_idx = get_entry_idx_from_bucket(chunked_file, 0, 0)
+            entry_idx = get_entry_idx_from_bucket(bucket_file, 0, 0)
             assert entry_idx == 0
 
-            entry_idx = get_entry_idx_from_bucket(chunked_file, 0, 1)
+            entry_idx = get_entry_idx_from_bucket(bucket_file, 0, 1)
             assert entry_idx == 1
 
             # Bucket 1 should have entries 2 and 3
-            entry_idx = get_entry_idx_from_bucket(chunked_file, 1, 0)
+            entry_idx = get_entry_idx_from_bucket(bucket_file, 1, 0)
             assert entry_idx == 2
 
-            entry_idx = get_entry_idx_from_bucket(chunked_file, 1, 1)
+            entry_idx = get_entry_idx_from_bucket(bucket_file, 1, 1)
             assert entry_idx == 3
 
             # Bucket 2 should have entry 4
-            entry_idx = get_entry_idx_from_bucket(chunked_file, 2, 0)
+            entry_idx = get_entry_idx_from_bucket(bucket_file, 2, 0)
             assert entry_idx == 4
 
 
@@ -596,19 +596,19 @@ def test_get_entry_idx_from_bucket_error_cases() -> None:
             append_to_dataset(data_file, index_file, 1, 100, [10], [20])
             append_to_dataset(data_file, index_file, 2, 200, [30], [40])
 
-        create_chunked_index(dataset_path, step_size=16, max_length=32)
+        create_bucket_index(dataset_path, step_size=16, max_length=32)
 
-        with open(dataset_path + ".cidx", "rb") as chunked_file:
+        with open(dataset_path + ".bidx", "rb") as bucket_file:
             # Test invalid bucket ID
             try:
-                get_entry_idx_from_bucket(chunked_file, 10, 0)  # Bucket 10 doesn't exist
+                get_entry_idx_from_bucket(bucket_file, 10, 0)  # Bucket 10 doesn't exist
                 assert False, "Expected ValueError for invalid bucket ID"
             except ValueError as e:
                 assert "Bucket ID" in str(e)
 
             # Test invalid index in bucket
             try:
-                get_entry_idx_from_bucket(chunked_file, 0, 10)  # Index 10 doesn't exist in bucket
+                get_entry_idx_from_bucket(bucket_file, 0, 10)  # Index 10 doesn't exist in bucket
                 assert False, "Expected ValueError for invalid index in bucket"
             except ValueError as e:
                 assert "Could not read entry" in str(e)
@@ -627,13 +627,13 @@ def test_get_entry_idx_from_bucket_single_bucket() -> None:
             append_to_dataset(data_file, index_file, 2, 200, [30] * 8, [40] * 2)  # max=8
             append_to_dataset(data_file, index_file, 3, 300, [50] * 4, [60] * 6)  # max=6
 
-        create_chunked_index(dataset_path, step_size=16, max_length=32)
+        create_bucket_index(dataset_path, step_size=16, max_length=32)
 
-        with open(dataset_path + ".cidx", "rb") as chunked_file:
+        with open(dataset_path + ".bidx", "rb") as bucket_file:
             # All entries should be in bucket 0
-            assert get_entry_idx_from_bucket(chunked_file, 0, 0) == 0
-            assert get_entry_idx_from_bucket(chunked_file, 0, 1) == 1
-            assert get_entry_idx_from_bucket(chunked_file, 0, 2) == 2
+            assert get_entry_idx_from_bucket(bucket_file, 0, 0) == 0
+            assert get_entry_idx_from_bucket(bucket_file, 0, 1) == 1
+            assert get_entry_idx_from_bucket(bucket_file, 0, 2) == 2
 
 
 def test_get_entry_idx_from_bucket_empty_buckets() -> None:
@@ -650,18 +650,18 @@ def test_get_entry_idx_from_bucket_empty_buckets() -> None:
             # max=50 -> bucket 3 (skipping buckets 1 and 2)
             append_to_dataset(data_file, index_file, 2, 200, [30] * 50, [40] * 45)
 
-        create_chunked_index(dataset_path, step_size=16, max_length=64)
+        create_bucket_index(dataset_path, step_size=16, max_length=64)
 
-        with open(dataset_path + ".cidx", "rb") as chunked_file:
+        with open(dataset_path + ".bidx", "rb") as bucket_file:
             # Bucket 0 should have entry 0
-            assert get_entry_idx_from_bucket(chunked_file, 0, 0) == 0
+            assert get_entry_idx_from_bucket(bucket_file, 0, 0) == 0
 
             # Bucket 3 should have entry 1
-            assert get_entry_idx_from_bucket(chunked_file, 3, 0) == 1
+            assert get_entry_idx_from_bucket(bucket_file, 3, 0) == 1
 
             # Test reading way out of bounds should fail
             try:
-                get_entry_idx_from_bucket(chunked_file, 0, 10)  # Way beyond bucket size
+                get_entry_idx_from_bucket(bucket_file, 0, 10)  # Way beyond bucket size
                 assert False, "Expected ValueError for way out of range index"
             except ValueError as e:
                 assert "Could not read entry" in str(e)
@@ -692,12 +692,12 @@ def test_get_entry_idx_from_bucket_large_dataset() -> None:
                 )
                 expected_entries.append((i, max(src_len, tgt_len - 1)))
 
-        create_chunked_index(dataset_path, step_size=16, max_length=64)
+        create_bucket_index(dataset_path, step_size=16, max_length=64)
 
         # Group expected entries by bucket
         buckets: dict[int, list[int]] = {}
         for entry_idx, max_len in expected_entries:
-            bucket_id = min((max_len + 15) // 16 - 1, 3)  # Same logic as in create_chunked_index
+            bucket_id = min((max_len + 15) // 16 - 1, 3)  # Same logic as in create_bucket_index
             if bucket_id < 0:
                 bucket_id = 0
             if bucket_id not in buckets:
@@ -705,11 +705,11 @@ def test_get_entry_idx_from_bucket_large_dataset() -> None:
             buckets[bucket_id].append(entry_idx)
 
         # Test that we can retrieve the correct entries from each bucket
-        with open(dataset_path + ".cidx", "rb") as chunked_file:
+        with open(dataset_path + ".bidx", "rb") as bucket_file:
             for bucket_id, expected_entry_indices in buckets.items():
                 for idx_in_bucket, expected_entry_idx in enumerate(expected_entry_indices):
                     actual_entry_idx = get_entry_idx_from_bucket(
-                        chunked_file, bucket_id, idx_in_bucket
+                        bucket_file, bucket_id, idx_in_bucket
                     )
                     assert actual_entry_idx == expected_entry_idx, (
                         f"Bucket {bucket_id}, index {idx_in_bucket}: expected {expected_entry_idx},"

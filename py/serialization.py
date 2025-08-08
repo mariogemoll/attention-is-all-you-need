@@ -304,16 +304,16 @@ def _process_index_chunk(
     return buckets
 
 
-def create_chunked_index(
+def create_bucket_index(
     dataset_file_path_prefix: str,
     step_size: int = 16,
     max_length: int = 512,
     num_processes: int | None = None,
 ) -> int:
     """
-    Create a chunked index file that groups entry indices by maximum sentence length.
+    Create a bucket index file that groups entry indices by maximum sentence length.
 
-    The chunked index format:
+    The bucket index format:
     - Header: [step_size(4B)] [num_buckets(4B)] [bucket_offset_1(4B)] [bucket_offset_2(4B)] ...
     - For each bucket: entry indices with format [entry_idx(4B)] = 4 bytes per entry
 
@@ -328,7 +328,7 @@ def create_chunked_index(
     """
     data_file_path = dataset_file_path_prefix + ".bin"
     index_file_path = dataset_file_path_prefix + ".idx"
-    output_index_path = dataset_file_path_prefix + ".cidx"  # chunked index
+    output_index_path = dataset_file_path_prefix + ".bidx"  # bucket index
 
     if not os.path.exists(index_file_path):
         raise FileNotFoundError(f"Dataset data file not found: {index_file_path}")
@@ -373,12 +373,12 @@ def create_chunked_index(
     # Merge results from all processes
     buckets: list[list[int]] = [[] for _ in range(num_buckets)]
     total_entries = 0
-    for chunk_buckets in results:
-        for bucket_idx, entries in enumerate(chunk_buckets):
+    for worker_buckets in results:
+        for bucket_idx, entries in enumerate(worker_buckets):
             buckets[bucket_idx].extend(entries)
             total_entries += len(entries)
 
-    # Write chunked index file
+    # Write bucket index file
     with open(output_index_path, "wb") as output_file:
         # Write header: step size, num. of buckets, followed by bucket offsets (to be filled later)
         output_file.write(struct.pack("<I", step_size))
@@ -413,17 +413,17 @@ def create_chunked_index(
     return total_entries
 
 
-def read_chunked_index_header(chunked_index_path: str) -> tuple[int, int, list[int]]:
+def read_bucket_index_header(bucket_index_path: str) -> tuple[int, int, list[int]]:
     """
-    Read the header of a chunked index file to get bucket information.
+    Read the header of a bucket index file to get bucket information.
 
     Args:
-        chunked_index_path: Path to the chunked index file (.cidx)
+        bucket_index_path: Path to the bucket index file (.bidx)
 
     Returns:
         Tuple of (step_size, num_buckets, bucket_offsets)
     """
-    with open(chunked_index_path, "rb") as f:
+    with open(bucket_index_path, "rb") as f:
         step_size = struct.unpack("<I", f.read(4))[0]
         num_buckets = struct.unpack("<I", f.read(4))[0]
         bucket_offsets = []
@@ -434,17 +434,17 @@ def read_chunked_index_header(chunked_index_path: str) -> tuple[int, int, list[i
     return step_size, num_buckets, bucket_offsets
 
 
-def get_bucket_sizes(chunked_index_path: str) -> list[int]:
+def get_bucket_sizes(bucket_index_path: str) -> list[int]:
     """
     Get the number of entries in each bucket without reading the actual indices.
 
     Args:
-        chunked_index_path: Path to the chunked index file (.cidx)
+        bucket_index_path: Path to the bucket index file (.bidx)
 
     Returns:
         List of entry counts for each bucket
     """
-    step_size, num_buckets, bucket_offsets = read_chunked_index_header(chunked_index_path)
+    step_size, num_buckets, bucket_offsets = read_bucket_index_header(bucket_index_path)
 
     bucket_sizes = []
     for i in range(num_buckets):
@@ -453,7 +453,7 @@ def get_bucket_sizes(chunked_index_path: str) -> list[int]:
 
         if end_offset is None:
             # Last bucket - need to check file size
-            file_size = os.path.getsize(chunked_index_path)
+            file_size = os.path.getsize(bucket_index_path)
             bucket_byte_size = file_size - start_offset
         else:
             bucket_byte_size = end_offset - start_offset
@@ -465,18 +465,18 @@ def get_bucket_sizes(chunked_index_path: str) -> list[int]:
     return bucket_sizes
 
 
-def print_bucket_summary(chunked_index_path: str) -> None:
+def print_bucket_summary(bucket_index_path: str) -> None:
     """
     Print a summary of bucket sizes.
 
     Args:
-        chunked_index_path: Path to the chunked index file (.cidx)
+        bucket_index_path: Path to the bucket index file (.bidx)
     """
-    step_size, num_buckets, bucket_offsets = read_chunked_index_header(chunked_index_path)
-    bucket_sizes = get_bucket_sizes(chunked_index_path)
+    step_size, num_buckets, bucket_offsets = read_bucket_index_header(bucket_index_path)
+    bucket_sizes = get_bucket_sizes(bucket_index_path)
     total_entries = sum(bucket_sizes)
 
-    print(f"Bucket summary for {chunked_index_path}:")
+    print(f"Bucket summary for {bucket_index_path}:")
     print(f"Total entries: {total_entries}")
     print()
 
@@ -492,15 +492,15 @@ def print_bucket_summary(chunked_index_path: str) -> None:
 
 
 def get_entry_idx_from_bucket(
-    chunked_index_file: BinaryIO,
+    bucket_index_file: BinaryIO,
     bucket_id: int,
     idx_in_bucket: int,
 ) -> int:
     """
-    Get the entry index for a specific position within a bucket from a chunked index file.
+    Get the entry index for a specific position within a bucket from a bucket index file.
 
     Args:
-        chunked_index_file: Open binary file handle for reading chunked index
+        bucket_index_file: Open binary file handle for reading bucket index
         bucket_id: ID of the bucket to read from
         idx_in_bucket: Index within the bucket (0-based)
 
@@ -511,24 +511,24 @@ def get_entry_idx_from_bucket(
         ValueError: If bucket_id is invalid or idx_in_bucket is out of range
     """
     # Read header to get bucket information
-    chunked_index_file.seek(0)
-    _ = struct.unpack("<I", chunked_index_file.read(4))[0]  # Step size
-    num_buckets = struct.unpack("<I", chunked_index_file.read(4))[0]
+    bucket_index_file.seek(0)
+    _ = struct.unpack("<I", bucket_index_file.read(4))[0]  # Step size
+    num_buckets = struct.unpack("<I", bucket_index_file.read(4))[0]
 
     if bucket_id >= num_buckets:
         raise ValueError(f"Bucket ID {bucket_id} >= number of buckets {num_buckets}")
 
     # Read the specific bucket offset we need
     # Skip step_size + num_buckets + previous bucket offsets
-    chunked_index_file.seek(8 + bucket_id * 4)
-    bucket_start_offset = struct.unpack("<I", chunked_index_file.read(4))[0]
+    bucket_index_file.seek(8 + bucket_id * 4)
+    bucket_start_offset = struct.unpack("<I", bucket_index_file.read(4))[0]
 
     # Jump directly to the entry within the bucket
     entry_offset = bucket_start_offset + (idx_in_bucket * 4)
-    chunked_index_file.seek(entry_offset)
+    bucket_index_file.seek(entry_offset)
 
     # Read and return the entry index
-    entry_data = chunked_index_file.read(4)
+    entry_data = bucket_index_file.read(4)
     if len(entry_data) < 4:
         raise ValueError(f"Could not read entry at bucket {bucket_id}, index {idx_in_bucket}")
 
