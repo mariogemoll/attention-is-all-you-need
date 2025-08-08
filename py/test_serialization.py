@@ -9,6 +9,9 @@ from serialization import (
     create_chunked_index,
     get_entry_idx_from_bucket,
     get_entry_info_from_index,
+    get_number_of_entries,
+    read_from_data_file,
+    split_dataset,
 )
 
 
@@ -712,3 +715,278 @@ def test_get_entry_idx_from_bucket_large_dataset() -> None:
                         f"Bucket {bucket_id}, index {idx_in_bucket}: expected {expected_entry_idx},"
                         f" got {actual_entry_idx}"
                     )
+
+
+def test_split_dataset_basic() -> None:
+    """Test basic functionality of split_dataset."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Create input dataset
+        input_path = os.path.join(tmp_dir, "input_dataset")
+        output_a_path = os.path.join(tmp_dir, "dataset_a")
+        output_b_path = os.path.join(tmp_dir, "dataset_b")
+
+        # Create test dataset with 10 entries
+        test_entries = [
+            (i + 1, i * 100, [10 + i] * (i % 3 + 1), [20 + i] * (i % 4 + 1)) for i in range(10)
+        ]
+
+        with open(input_path + ".bin", "wb") as data_file, open(
+            input_path + ".idx", "wb"
+        ) as index_file:
+            for corpus_id, line_num, src_tokens, tgt_tokens in test_entries:
+                append_to_dataset(
+                    data_file, index_file, corpus_id, line_num, src_tokens, tgt_tokens
+                )
+
+        # Split dataset - 4 entries in A, 6 entries in B
+        split_dataset(input_path, output_a_path, output_b_path, 4)
+
+        # Verify output files exist
+        assert os.path.exists(output_a_path + ".bin")
+        assert os.path.exists(output_a_path + ".idx")
+        assert os.path.exists(output_b_path + ".bin")
+        assert os.path.exists(output_b_path + ".idx")
+
+        # Verify counts
+        assert get_number_of_entries(output_a_path) == 4
+        assert get_number_of_entries(output_b_path) == 6
+
+        # Verify total entries are preserved
+        assert get_number_of_entries(output_a_path) + get_number_of_entries(output_b_path) == 10
+
+        # Verify that we can read entries from both output datasets
+        for output_path in [output_a_path, output_b_path]:
+            data_file_size = os.path.getsize(output_path + ".bin")
+            with open(output_path + ".bin", "rb") as data_file, open(
+                output_path + ".idx", "rb"
+            ) as index_file:
+                num_entries = get_number_of_entries(output_path)
+                for i in range(num_entries):
+                    # Should be able to get entry info without errors
+                    start_pos, src_len, tgt_len = get_entry_info_from_index(
+                        index_file, data_file_size, i
+                    )
+                    assert start_pos >= 0
+                    assert src_len >= 0
+                    assert tgt_len >= 0
+
+                    # Should be able to read the actual data
+                    corpus_id, line_num, src_tokens, tgt_tokens = read_from_data_file(
+                        data_file, start_pos, src_len, tgt_len
+                    )
+                    assert corpus_id > 0
+                    assert len(src_tokens) == src_len
+                    assert len(tgt_tokens) == tgt_len
+
+
+def test_split_dataset_edge_cases() -> None:
+    """Test edge cases for split_dataset."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Test splitting dataset with only 1 entry
+        input_path = os.path.join(tmp_dir, "input_single")
+        output_a_path = os.path.join(tmp_dir, "single_a")
+        output_b_path = os.path.join(tmp_dir, "single_b")
+
+        # Create dataset with 1 entry
+        with open(input_path + ".bin", "wb") as data_file, open(
+            input_path + ".idx", "wb"
+        ) as index_file:
+            append_to_dataset(data_file, index_file, 1, 42, [100, 200], [300, 400, 500])
+
+        # Split: all entries go to A
+        split_dataset(input_path, output_a_path, output_b_path, 1)
+
+        assert get_number_of_entries(output_a_path) == 1
+        assert get_number_of_entries(output_b_path) == 0
+
+        # Verify A contains the entry correctly
+        data_file_size = os.path.getsize(output_a_path + ".bin")
+        with open(output_a_path + ".bin", "rb") as data_file, open(
+            output_a_path + ".idx", "rb"
+        ) as index_file:
+            start_pos, src_len, tgt_len = get_entry_info_from_index(index_file, data_file_size, 0)
+            corpus_id, line_num, src_tokens, tgt_tokens = read_from_data_file(
+                data_file, start_pos, src_len, tgt_len
+            )
+            assert corpus_id == 1
+            assert line_num == 42
+            assert src_tokens == [100, 200]
+            assert tgt_tokens == [300, 400, 500]
+
+        # Test splitting dataset where all entries go to B
+        input_path_2 = os.path.join(tmp_dir, "input_single_2")
+        output_a_path_2 = os.path.join(tmp_dir, "single_a_2")
+        output_b_path_2 = os.path.join(tmp_dir, "single_b_2")
+
+        # Create dataset with 3 entries
+        with open(input_path_2 + ".bin", "wb") as data_file, open(
+            input_path_2 + ".idx", "wb"
+        ) as index_file:
+            for i in range(3):
+                append_to_dataset(data_file, index_file, i + 1, i + 10, [i + 100], [i + 200])
+
+        # Split: 0 entries go to A, all go to B
+        split_dataset(input_path_2, output_a_path_2, output_b_path_2, 0)
+
+        assert get_number_of_entries(output_a_path_2) == 0
+        assert get_number_of_entries(output_b_path_2) == 3
+
+
+def test_split_dataset_preserves_data_integrity() -> None:
+    """Test that split_dataset preserves data integrity and doesn't corrupt entries."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Create input dataset with varied entry sizes and data
+        input_path = os.path.join(tmp_dir, "input_varied")
+        output_a_path = os.path.join(tmp_dir, "varied_a")
+        output_b_path = os.path.join(tmp_dir, "varied_b")
+
+        # Create diverse test data
+        original_entries = [
+            (1, 100, [], [1, 2, 3]),  # Empty source tokens
+            (2, 200, [10, 20, 30], []),  # Empty target tokens
+            (3, 300, [], []),  # Both empty
+            (4, 400, [100] * 50, [200] * 30),  # Large entry
+            (5, 500, [1], [2]),  # Minimal entry
+            (10, 999, list(range(100, 200)), list(range(300, 350))),  # Many tokens
+        ]
+
+        with open(input_path + ".bin", "wb") as data_file, open(
+            input_path + ".idx", "wb"
+        ) as index_file:
+            for corpus_id, line_num, src_tokens, tgt_tokens in original_entries:
+                append_to_dataset(
+                    data_file, index_file, corpus_id, line_num, src_tokens, tgt_tokens
+                )
+
+        # Split dataset
+        split_dataset(input_path, output_a_path, output_b_path, 3)
+
+        # Collect all entries from both output datasets
+        recovered_entries = []
+
+        for output_path in [output_a_path, output_b_path]:
+            data_file_size = os.path.getsize(output_path + ".bin")
+            num_entries = get_number_of_entries(output_path)
+
+            with open(output_path + ".bin", "rb") as data_file, open(
+                output_path + ".idx", "rb"
+            ) as index_file:
+                for i in range(num_entries):
+                    start_pos, src_len, tgt_len = get_entry_info_from_index(
+                        index_file, data_file_size, i
+                    )
+                    corpus_id, line_num, src_tokens, tgt_tokens = read_from_data_file(
+                        data_file, start_pos, src_len, tgt_len
+                    )
+                    recovered_entries.append((corpus_id, line_num, src_tokens, tgt_tokens))
+
+        # Verify all original entries are recovered (order may be different)
+        assert len(recovered_entries) == len(original_entries)
+
+        # Sort both lists to compare content regardless of order
+        original_sorted = sorted(original_entries)
+        recovered_sorted = sorted(recovered_entries)
+
+        for orig, recovered in zip(original_sorted, recovered_sorted):
+            assert orig == recovered, f"Entry mismatch: original {orig}, recovered {recovered}"
+
+
+def test_split_dataset_index_recalculation() -> None:
+    """Test that indices are correctly recalculated in split datasets."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Create input dataset
+        input_path = os.path.join(tmp_dir, "input_index_test")
+        output_a_path = os.path.join(tmp_dir, "index_a")
+        output_b_path = os.path.join(tmp_dir, "index_b")
+
+        # Create entries of different sizes to test index calculation
+        with open(input_path + ".bin", "wb") as data_file, open(
+            input_path + ".idx", "wb"
+        ) as index_file:
+            append_to_dataset(data_file, index_file, 1, 1, [1, 2], [3, 4, 5])  # 9 bytes total
+            append_to_dataset(data_file, index_file, 2, 2, [10], [20, 30])  # 7 bytes total
+            append_to_dataset(data_file, index_file, 3, 3, [100, 200, 300], [400])  # 9 bytes total
+
+        # Split dataset
+        split_dataset(input_path, output_a_path, output_b_path, 2)
+
+        # Test that indices in output files start at 0 and are sequential
+        for output_path in [output_a_path, output_b_path]:
+            if get_number_of_entries(output_path) > 0:
+                with open(output_path + ".idx", "rb") as index_file:
+                    # Read first index entry
+                    first_entry_pos, _ = struct.unpack("<IB", index_file.read(5))
+                    assert (
+                        first_entry_pos == 0
+                    ), f"First entry should start at position 0, got {first_entry_pos}"
+
+                    # If there are more entries, verify they are sequential
+                    if get_number_of_entries(output_path) > 1:
+                        data_file_size = os.path.getsize(output_path + ".bin")
+
+                        # Read and verify each entry's position
+                        index_file.seek(0)  # Reset to beginning
+                        prev_end_pos = 0
+
+                        for i in range(get_number_of_entries(output_path)):
+                            entry_pos, src_len = struct.unpack("<IB", index_file.read(5))
+
+                            # This entry should start where previous ended
+                            assert (
+                                entry_pos == prev_end_pos
+                            ), f"Entry {i} starts at {entry_pos}, expected {prev_end_pos}"
+
+                            # Calculate where this entry ends using get_entry_info_from_index
+                            with open(output_path + ".idx", "rb") as temp_index:
+                                _, _, tgt_len = get_entry_info_from_index(
+                                    temp_index, data_file_size, i
+                                )
+                            # corpus_id + line_num + tokens
+                            entry_size = 1 + 4 + src_len * 2 + tgt_len * 2
+                            prev_end_pos = entry_pos + entry_size
+
+
+def test_split_dataset_random_selection() -> None:
+    """Test that split_dataset uses random selection (run multiple times to check variance)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Create input dataset with identifiable entries
+        input_path = os.path.join(tmp_dir, "input_random")
+
+        with open(input_path + ".bin", "wb") as data_file, open(
+            input_path + ".idx", "wb"
+        ) as index_file:
+            for i in range(10):
+                # Use line number as identifier
+                append_to_dataset(data_file, index_file, 1, i, [i * 10], [i * 100])
+
+        # Run split multiple times and collect which entries went to dataset A
+        a_selections = []
+        for run in range(5):
+            output_a_path = os.path.join(tmp_dir, f"random_a_{run}")
+            output_b_path = os.path.join(tmp_dir, f"random_b_{run}")
+
+            split_dataset(input_path, output_a_path, output_b_path, 4)
+
+            # Read which line numbers ended up in dataset A
+            data_file_size = os.path.getsize(output_a_path + ".bin")
+            line_numbers_in_a = []
+
+            with open(output_a_path + ".bin", "rb") as data_file, open(
+                output_a_path + ".idx", "rb"
+            ) as index_file:
+                num_entries = get_number_of_entries(output_a_path)
+                for i in range(num_entries):
+                    start_pos, src_len, tgt_len = get_entry_info_from_index(
+                        index_file, data_file_size, i
+                    )
+                    _, line_num, _, _ = read_from_data_file(data_file, start_pos, src_len, tgt_len)
+                    line_numbers_in_a.append(line_num)
+
+            a_selections.append(sorted(line_numbers_in_a))
+
+        # Check that we got different selections (randomness working)
+        # With 10 entries choosing 4, and 5 runs, we should get some variation
+        unique_selections = len(set(tuple(sel) for sel in a_selections))
+        assert (
+            unique_selections > 1
+        ), f"Expected some randomness, but got same selection {unique_selections} times"

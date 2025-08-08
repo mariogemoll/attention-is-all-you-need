@@ -1,10 +1,11 @@
 import os
+import random
 import struct
 from functools import partial
 from multiprocessing import Pool
 from typing import BinaryIO
 
-from tqdm import tqdm
+from tqdm import tqdm, trange
 
 
 def append_to_dataset(
@@ -340,8 +341,6 @@ def create_chunked_index(
     index_file_size = os.path.getsize(index_file_path)
     entries_count = index_file_size // 5  # 5 bytes per entry in current format
 
-    print(f"Creating {num_buckets} buckets with step size {step_size}")
-
     # Determine number of processes
     if num_processes is None:
         import multiprocessing
@@ -357,11 +356,6 @@ def create_chunked_index(
         actual_chunk_size = min(chunk_size, remaining)
         chunks.append((i, actual_chunk_size))
 
-    print(
-        f"Processing {entries_count} entries in {len(chunks)} chunks "
-        f"using {num_processes} processes"
-    )
-
     # Process chunks in parallel
     with Pool(processes=num_processes) as pool:
         worker_func = partial(
@@ -374,9 +368,7 @@ def create_chunked_index(
         )
 
         # Submit all chunks
-        results = list(
-            tqdm(pool.starmap(worker_func, chunks), desc="Processing chunks", total=len(chunks))
-        )
+        results = list(pool.starmap(worker_func, chunks))
 
     # Merge results from all processes
     buckets: list[list[int]] = [[] for _ in range(num_buckets)]
@@ -416,13 +408,6 @@ def create_chunked_index(
         ):
             output_file.seek(offset_pos)
             output_file.write(struct.pack("<I", actual_offset))
-
-    # Print summary
-    print(f"Chunked index created: {output_index_path}")
-    print(f"Total entries: {total_entries}")
-    for i, count in enumerate(entries_per_bucket):
-        max_bucket_len = (i + 1) * step_size
-        print(f"  Bucket {i} (≤{max_bucket_len}): {count} entries")
 
     return total_entries
 
@@ -545,3 +530,93 @@ def get_entry_idx_from_bucket(
 
     entry_idx: int = struct.unpack("<I", entry_data)[0]
     return entry_idx
+
+
+def get_number_of_entries(dataset_file_path: str) -> int:
+    """
+    Get the number of entries in a binary dataset.
+
+    Args:
+        dataset_file_path: Path to the dataset file (without suffix)
+
+    Returns:
+        Number of entries in the dataset
+    """
+    index_file_path = dataset_file_path + ".idx"
+    index_file_size = os.path.getsize(index_file_path)
+    return index_file_size // 5  # Each index entry is 5 bytes
+
+
+def split_dataset(
+    input_file_path: str,
+    output_file_path_a: str,
+    output_file_path_b: str,
+    num_samples_in_a: int,
+) -> None:
+    """
+    Split a dataset into two parts.
+
+    Args:
+        input_file_path: Path to the input dataset file (without suffix)
+        output_file_a_path: Path to the first output dataset file (without suffix)
+        output_file_b_path: Path to the second output dataset file (without suffix)
+        num_samples_in_a: Number of samples to include in the first output file
+    """
+    input_index_file_path = input_file_path + ".idx"
+    input_data_file_path = input_file_path + ".bin"
+
+    num_entries = get_number_of_entries(input_file_path)
+
+    # Randomly select indices to split the dataset
+    a_indices = random.sample(range(num_entries), num_samples_in_a)
+
+    # Get size of data file
+    data_file_size = os.path.getsize(input_data_file_path)
+
+    with open(input_index_file_path, "rb") as input_index, open(
+        input_data_file_path, "rb"
+    ) as input_data, open(output_file_path_a + ".idx", "wb") as a_output_index, open(
+        output_file_path_b + ".idx", "wb"
+    ) as b_output_index, open(
+        output_file_path_a + ".bin", "wb"
+    ) as a_output_data, open(
+        output_file_path_b + ".bin", "wb"
+    ) as b_output_data:
+
+        # Convert a_indices to a set for faster lookup
+        a_indices_set = set(a_indices)
+
+        for i in trange(num_entries):
+            # Determine which output files to use
+            if i in a_indices_set:
+                output_data = a_output_data
+                output_index = a_output_index
+            else:
+                output_data = b_output_data
+                output_index = b_output_index
+
+            # Get entry information from index
+            entry_start_pos, src_token_count, tgt_token_count = get_entry_info_from_index(
+                input_index, data_file_size, i
+            )
+
+            # Calculate the number of bytes to read for this entry
+            num_bytes_to_read = 1 + 4 + src_token_count * 2 + tgt_token_count * 2
+
+            # Read the complete data entry from input
+            input_data.seek(entry_start_pos)
+            data_entry = input_data.read(num_bytes_to_read)
+            if len(data_entry) < num_bytes_to_read:
+                raise ValueError(
+                    f"Data entry {i} is incomplete: expected {num_bytes_to_read} bytes, "
+                    f"got {len(data_entry)}"
+                )
+
+            # Get current position in output data file for the new index entry
+            new_entry_start_pos = output_data.tell()
+
+            # Write the data entry to the appropriate output file
+            output_data.write(data_entry)
+
+            # Write the updated index entry (new position + source token count)
+            output_index.write(struct.pack("<IB", new_entry_start_pos, src_token_count))

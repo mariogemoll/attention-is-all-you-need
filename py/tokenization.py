@@ -9,7 +9,7 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 import params
-from serialization import append_to_dataset, combine_datasets
+from serialization import append_to_dataset, combine_datasets, get_number_of_entries
 
 
 def create_tokenizer(output_file_path: str, files: list[str]) -> None:
@@ -222,9 +222,7 @@ def sample_from_dataset(
     data_file_path = dataset_file_path + ".bin"
     index_file_path = dataset_file_path + ".idx"
 
-    # Determine total number of entries by reading index file size
-    index_file_size = os.path.getsize(index_file_path)
-    total_entries = index_file_size // 5  # Each index entry is now 5 bytes
+    total_entries = get_number_of_entries(dataset_file_path)
 
     if num_samples > total_entries:
         print(f"Requested {num_samples} samples, but dataset only has {total_entries} entries")
