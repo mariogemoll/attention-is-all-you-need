@@ -472,23 +472,30 @@ def print_bucket_summary(bucket_index_path: str) -> None:
     Args:
         bucket_index_path: Path to the bucket index file (.bidx)
     """
+    from tabulate import tabulate
+
     step_size, num_buckets, bucket_offsets = read_bucket_index_header(bucket_index_path)
     bucket_sizes = get_bucket_sizes(bucket_index_path)
     total_entries = sum(bucket_sizes)
 
     print(f"Bucket summary for {bucket_index_path}:")
-    print(f"Total entries: {total_entries}")
+    print(f"Total entries: {total_entries:,}")
     print()
 
+    # Prepare table data
+    table_data = []
     for i, count in enumerate(bucket_sizes):
         if count > 0:  # Only show non-empty buckets
             max_bucket_len = (i + 1) * step_size
             min_bucket_len = i * step_size + 1 if i > 0 else 1
             percentage = (count / total_entries * 100) if total_entries > 0 else 0
-            print(
-                f"  Bucket {i} ({min_bucket_len:3d}-{max_bucket_len:3d} tokens): "
-                f"{count:6d} entries ({percentage:5.1f}%)"
+            table_data.append(
+                [i, f"{min_bucket_len}-{max_bucket_len}", f"{count:,}", f"{percentage:.1f}%"]
             )
+
+    if table_data:
+        headers = ["Bucket", "Token Range", "Entries", "Percentage"]
+        print(tabulate(table_data, headers=headers, tablefmt="simple"))
 
 
 def get_entry_idx_from_bucket(
