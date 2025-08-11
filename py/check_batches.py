@@ -19,15 +19,10 @@ def main() -> None:
 
     target_tokens_per_batch = 32768
 
-    with open_buckets(file_path_prefix) as (
-        bucket_index_file,
-        index_file,
-        data_file,
-        data_file_size,
-    ):
-        step_size, _, _ = read_bucket_index_header(bucket_index_file)
+    with open_buckets(file_path_prefix) as dataset:
+        step_size, _, _ = read_bucket_index_header(dataset.bucket_index_file)
         batches = EpochBatches(
-            bucket_index_file,
+            dataset.bucket_index_file,
             target_tokens_per_batch=target_tokens_per_batch,
             full_batches_only=True,
         )
@@ -43,7 +38,7 @@ def main() -> None:
 
                 batch_counter += 1
                 _, _, src_tokens, tgt_tokens = get_entry(
-                    index_file, data_file, data_file_size, actual_entry_idx
+                    dataset.index_file, dataset.data_file, dataset.data_file_size, actual_entry_idx
                 )
                 pair_counter += 1
 

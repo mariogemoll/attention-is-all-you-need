@@ -16,6 +16,10 @@ jobs:
         working-directory: py
         run: |
           pip install -r requirements.txt -r requirements-check.txt -r requirements-test.txt
+      - name: Install PyTorch (CPU only version)
+        working-directory: py
+        run: >-
+          pip install "torch>=2,<3" --index-url https://download.pytorch.org/whl/cpu
       - name: Install Node.js dependencies
         working-directory: js
         run: npm install

@@ -1,33 +1,50 @@
 from contextlib import contextmanager
-from typing import BinaryIO, Generator, Tuple
+from typing import BinaryIO, Generator
 
-import numpy as np
+import torch
 
 from params import eos, pad, sos
-from serialization import get_entries
+from serialization import get_entries, read_bucket_index_header
+
+
+class BucketedDataset:
+    bucket_index_file: BinaryIO
+    step_size: int
+    index_file: BinaryIO
+    data_file: BinaryIO
+    data_file_size: int
+
+    def __init__(
+        self,
+        bucket_index_file: BinaryIO,
+        step_size: int,
+        index_file: BinaryIO,
+        data_file: BinaryIO,
+        data_file_size: int,
+    ):
+        self.bucket_index_file = bucket_index_file
+        self.step_size = step_size
+        self.index_file = index_file
+        self.data_file = data_file
+        self.data_file_size = data_file_size
 
 
 @contextmanager
-def open_buckets(base_path: str) -> Generator[Tuple[BinaryIO, BinaryIO, BinaryIO, int], None, None]:
-    """
-    Context manager to open dataset files (bucket index, index, and data files).
-
-    Args:
-        base_path: Path to the dataset files without extension (e.g., "../4_tokens/train")
-
-    Yields:
-        Tuple of (bucket_index_file, idx_file, data_file, data_file_size)
-    """
+def open_buckets(base_path: str) -> Generator[BucketedDataset, None, None]:
     bucket_index_file = open(f"{base_path}.bidx", "rb")
     idx_file = open(f"{base_path}.idx", "rb")
     data_file = open(f"{base_path}.bin", "rb")
-
     try:
-        # Get data file size
         data_file.seek(0, 2)
         data_file_size = data_file.tell()
-
-        yield bucket_index_file, idx_file, data_file, data_file_size
+        step_size, _, _ = read_bucket_index_header(bucket_index_file)
+        yield BucketedDataset(
+            bucket_index_file=bucket_index_file,
+            step_size=step_size,
+            index_file=idx_file,
+            data_file=data_file,
+            data_file_size=data_file_size,
+        )
     finally:
         bucket_index_file.close()
         idx_file.close()
@@ -36,7 +53,7 @@ def open_buckets(base_path: str) -> Generator[Tuple[BinaryIO, BinaryIO, BinaryIO
 
 def get_tensors(
     idx_file: BinaryIO, data_file: BinaryIO, data_file_length: int, seq_len: int, ids: list[int]
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     entries = get_entries(idx_file, data_file, data_file_length, ids)
 
     enc_input = []
@@ -50,8 +67,8 @@ def get_tensors(
         dec_input.append([sos] + tgt_tokens + [pad] * (seq_len - 1 - len(tgt_tokens)))
         dec_target.append(tgt_tokens + [eos] + [pad] * (seq_len - 1 - len(tgt_tokens)))
 
-    enc_input_tensor = np.array(enc_input, dtype=np.int64)
-    dec_input_tensor = np.array(dec_input, dtype=np.int64)
-    dec_target_tensor = np.array(dec_target, dtype=np.int64)
+    enc_input_tensor = torch.tensor(enc_input, dtype=torch.int64)
+    dec_input_tensor = torch.tensor(dec_input, dtype=torch.int64)
+    dec_target_tensor = torch.tensor(dec_target, dtype=torch.int64)
 
     return enc_input_tensor, dec_input_tensor, dec_target_tensor

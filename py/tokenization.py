@@ -16,7 +16,7 @@ def create_tokenizer(output_file_path: str, files: list[str]) -> None:
     tokenizer = tokenizers.Tokenizer(tokenizers.models.BPE())
     trainer = tokenizers.trainers.BpeTrainer(
         special_tokens=["[PAD]", "[SOS]", "[EOS]"],
-        vocab_size=params.bpe_vocab_size,
+        vocab_size=params.vocab_size,
         min_frequency=3,
         show_progress=True,
     )

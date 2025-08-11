@@ -23,14 +23,8 @@ def main() -> None:
 
     tokenizer = tokenizers.Tokenizer.from_file(tokenizer_path)
 
-    with open_buckets(dataset_file_path_prefix) as (
-        bucket_file,
-        index_file,
-        data_file,
-        data_file_len,
-    ):
-
-        bucket_sizes = get_bucket_sizes(bucket_file)
+    with open_buckets(dataset_file_path_prefix) as dataset:
+        bucket_sizes = get_bucket_sizes(dataset.bucket_index_file)
 
         num_buckets = len(bucket_sizes)
         if num_buckets == 0:
@@ -50,12 +44,14 @@ def main() -> None:
                 print(f"Bucket {bucket_index} is empty, skipping sample.")
                 continue
 
-            idx = get_entry_idx_from_bucket(bucket_file, bucket_index, idx_in_bucket)
+            idx = get_entry_idx_from_bucket(dataset.bucket_index_file, bucket_index, idx_in_bucket)
 
-            start_pos, src_len, tg_len = get_entry_info_from_index(index_file, data_file_len, idx)
+            start_pos, src_len, tg_len = get_entry_info_from_index(
+                dataset.index_file, dataset.data_file_size, idx
+            )
 
             corpus_id, original_line_number, src_tokens, tgt_tokens = read_from_data_file(
-                data_file, start_pos, src_len, tg_len
+                dataset.data_file, start_pos, src_len, tg_len
             )
 
             print(
