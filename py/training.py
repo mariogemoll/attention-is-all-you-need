@@ -88,6 +88,62 @@ def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
     return None
 
 
+def clean_up_old_checkpoints(checkpoint_dir: str, keep_last: int = 3) -> None:
+    """Remove old checkpoint files, keeping only the last N checkpoints.
+
+    Args:
+        checkpoint_dir: Directory containing checkpoints
+        keep_last: Number of most recent checkpoints to keep (default: 3)
+    """
+    if not os.path.exists(checkpoint_dir):
+        return
+
+    # Find all numbered checkpoint files
+    checkpoint_files = []
+    model_files = []
+
+    for filename in os.listdir(checkpoint_dir):
+        if filename.startswith("checkpoint_epoch_") and filename.endswith(".pt"):
+            try:
+                epoch_num = int(filename.replace("checkpoint_epoch_", "").replace(".pt", ""))
+                checkpoint_path = os.path.join(checkpoint_dir, filename)
+                checkpoint_files.append((epoch_num, checkpoint_path))
+            except ValueError:
+                continue
+
+        elif filename.startswith("model_epoch_") and filename.endswith(".pt"):
+            try:
+                epoch_num = int(filename.replace("model_epoch_", "").replace(".pt", ""))
+                model_path = os.path.join(checkpoint_dir, filename)
+                model_files.append((epoch_num, model_path))
+            except ValueError:
+                continue
+
+    # Sort by epoch number and keep only the most recent ones
+    checkpoint_files.sort(key=lambda x: x[0])
+    model_files.sort(key=lambda x: x[0])
+
+    # Remove old checkpoint files (keep the latest N)
+    if len(checkpoint_files) > keep_last:
+        files_to_remove = checkpoint_files[:-keep_last]
+        for epoch_num, filepath in files_to_remove:
+            try:
+                os.remove(filepath)
+                print(f"Removed old checkpoint: {os.path.basename(filepath)}")
+            except OSError as e:
+                print(f"Warning: Could not remove {filepath}: {e}")
+
+    # Remove old model weight files (keep the latest N)
+    if len(model_files) > keep_last:
+        files_to_remove = model_files[:-keep_last]
+        for epoch_num, filepath in files_to_remove:
+            try:
+                os.remove(filepath)
+                print(f"Removed old model weights: {os.path.basename(filepath)}")
+            except OSError as e:
+                print(f"Warning: Could not remove {filepath}: {e}")
+
+
 def init(
     checkpoint_dir: str,
     resume_from_checkpoint: bool = True,

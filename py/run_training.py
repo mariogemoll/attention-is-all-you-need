@@ -1,9 +1,10 @@
 from data import open_buckets
-from training import evaluate, init, save_checkpoint, train_one_epoch
+from training import clean_up_old_checkpoints, evaluate, init, save_checkpoint, train_one_epoch
 
 
 def main() -> None:
     checkpoint_dir = "checkpoints"
+    keep_checkpoints = 10  # Number of checkpoints to keep
     device, model, optimizer, criterion, writer, start_epoch = init(
         checkpoint_dir, resume_from_checkpoint=True
     )
@@ -20,6 +21,9 @@ def main() -> None:
 
             # Save checkpoint after each epoch (includes model weights)
             save_checkpoint(model, optimizer, epoch, val_loss, checkpoint_dir)
+
+            # Clean up old checkpoints (keep only the last N)
+            clean_up_old_checkpoints(checkpoint_dir, keep_checkpoints)
 
     # Close TensorBoard writer
     writer.close()  # type: ignore
