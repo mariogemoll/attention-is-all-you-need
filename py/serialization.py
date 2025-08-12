@@ -666,3 +666,44 @@ def split_dataset(
 
             # Write the updated index entry (new position + source token count)
             output_index.write(struct.pack("<IB", new_entry_start_pos, src_token_count))
+
+
+def simple_format_read_entry(
+    data_file: BinaryIO, index_file: BinaryIO, entry_idx: int
+) -> list[int]:
+    """
+    Read a single entry from the translate_dataset.py output format.
+
+    Args:
+        data_file: Open binary data file
+        index_file: Open binary index file
+        entry_idx: Entry index to read
+
+    Returns:
+        List of token IDs
+    """
+    # Read index entry (5 bytes: 4-byte offset + 1-byte length)
+    idx_file_pos = entry_idx * 5
+    index_file.seek(idx_file_pos)
+    index_data = index_file.read(5)
+
+    if len(index_data) != 5:
+        return []
+
+    # Unpack offset and length
+    offset = struct.unpack("<I", index_data[:4])[0]  # Little-endian 32-bit
+    length = struct.unpack("<B", index_data[4:5])[0]  # Single byte
+
+    if length == 0:
+        return []
+
+    # Read tokens from data file
+    data_file.seek(offset)
+    token_bytes = data_file.read(length * 2)  # 2 bytes per 16-bit token
+
+    if len(token_bytes) != length * 2:
+        return []
+
+    # Convert bytes to tokens (16-bit little-endian integers)
+    tokens = list(struct.unpack("<" + "h" * length, token_bytes))
+    return tokens

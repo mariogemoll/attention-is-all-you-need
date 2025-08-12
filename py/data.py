@@ -10,6 +10,7 @@ from serialization import get_entries, read_bucket_index_header
 class BucketedDataset:
     bucket_index_file: BinaryIO
     step_size: int
+    num_buckets: int
     index_file: BinaryIO
     data_file: BinaryIO
     data_file_size: int
@@ -18,12 +19,14 @@ class BucketedDataset:
         self,
         bucket_index_file: BinaryIO,
         step_size: int,
+        num_buckets: int,
         index_file: BinaryIO,
         data_file: BinaryIO,
         data_file_size: int,
     ):
         self.bucket_index_file = bucket_index_file
         self.step_size = step_size
+        self.num_buckets = num_buckets
         self.index_file = index_file
         self.data_file = data_file
         self.data_file_size = data_file_size
@@ -37,10 +40,11 @@ def open_buckets(base_path: str) -> Generator[BucketedDataset, None, None]:
     try:
         data_file.seek(0, 2)
         data_file_size = data_file.tell()
-        step_size, _, _ = read_bucket_index_header(bucket_index_file)
+        step_size, num_buckets, _ = read_bucket_index_header(bucket_index_file)
         yield BucketedDataset(
             bucket_index_file=bucket_index_file,
             step_size=step_size,
+            num_buckets=num_buckets,
             index_file=idx_file,
             data_file=data_file,
             data_file_size=data_file_size,

@@ -14,3 +14,5 @@ num_layers = 6
 # num_layers = 2
 
 num_epochs = 20
+
+target_num_tokens_per_batch = 25000

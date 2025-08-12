@@ -9,7 +9,12 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 import params
-from serialization import append_to_dataset, combine_datasets, get_number_of_entries
+from serialization import (
+    append_to_dataset,
+    combine_datasets,
+    get_number_of_entries,
+    simple_format_read_entry,
+)
 
 
 def create_tokenizer(output_file_path: str, files: list[str]) -> None:
@@ -35,6 +40,38 @@ def decode(tokenizer: tokenizers.Tokenizer, token: int) -> str:
         return "[EOS]"
     else:
         return tokenizer.decode([token])  # type: ignore
+
+
+def detokenize_sequence(tokenizer: tokenizers.Tokenizer, tokens: list[int]) -> str:
+    """
+    Convert a list of tokens back to text.
+
+    Args:
+        tokenizer: The tokenizer to use for decoding
+        tokens: List of token IDs
+
+    Returns:
+        Detokenized text string
+    """
+    if not tokens:
+        return ""
+
+    # Remove special tokens and decode the rest
+    text_tokens = []
+    for token in tokens:
+        if token == 0:  # PAD
+            continue
+        elif token == 1:  # SOS
+            continue
+        elif token == 2:  # EOS
+            break
+        else:
+            text_tokens.append(token)
+
+    if not text_tokens:
+        return ""
+
+    return str(tokenizer.decode(text_tokens))
 
 
 def pretty_print_tokens(
@@ -204,6 +241,76 @@ def tokenize_dataset(
         os.unlink(prefix + ".bin")
         os.unlink(prefix + ".idx")
     os.rmdir(temp_dir)
+
+
+def detokenize_dataset(
+    tokenizer_path: str,
+    input_dataset_path: str,
+    output_file_path: str,
+) -> None:
+    """
+    Detokenize a binary dataset to a text file.
+
+    Args:
+        tokenizer_path: Path to the tokenizer JSON file
+        input_dataset_path: Path to the input dataset (without .bin/.idx suffix)
+        output_file_path: Path to output text file
+    """
+    # Load tokenizer
+    print(f"Loading tokenizer from {tokenizer_path}...")
+    tokenizer = tokenizers.Tokenizer.from_file(tokenizer_path)
+
+    # Input files
+    input_data_path = input_dataset_path + ".bin"
+    input_index_path = input_dataset_path + ".idx"
+
+    # Check input files exist
+    if not os.path.exists(input_data_path) or not os.path.exists(input_index_path):
+        raise FileNotFoundError(
+            f"Error: Input dataset files not found: {input_dataset_path}.bin/.idx"
+        )
+
+    # Get number of entries
+    input_index_size = os.path.getsize(input_index_path)
+    num_entries = input_index_size // 5  # Each index entry is 5 bytes
+
+    print(f"Detokenizing {num_entries:,} entries from {input_dataset_path}")
+
+    # Create output directory if needed
+    output_dir = os.path.dirname(output_file_path)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Statistics
+    empty_count = 0
+
+    with open(input_data_path, "rb") as data_file, open(input_index_path, "rb") as index_file, open(
+        output_file_path, "w", encoding="utf-8"
+    ) as output_file:
+
+        for entry_idx in tqdm(range(num_entries), desc="Detokenizing"):
+            try:
+                # Read tokens from dataset
+                tokens = simple_format_read_entry(data_file, index_file, entry_idx)
+
+                # Detokenize to text
+                text = detokenize_sequence(tokenizer, tokens)
+                if not text.strip():
+                    empty_count += 1
+
+                output_file.write(text + "\n")
+
+            except Exception as e:
+                print(f"Error processing entry {entry_idx}: {e}")
+                # Write empty line to maintain correspondence
+                output_file.write("\n")
+                empty_count += 1
+
+    # Print statistics
+    print("✓ Detokenization complete!")
+    print(f"  Total entries processed: {num_entries:,}")
+    print(f"  Output file: {output_file_path}")
+    print(f"  Empty sequences: {empty_count:,}")
 
 
 def sample_from_dataset(

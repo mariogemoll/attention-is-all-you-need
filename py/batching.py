@@ -1,8 +1,12 @@
 import random
-from typing import BinaryIO, Generator
+from typing import TYPE_CHECKING, BinaryIO, Generator
+
+if TYPE_CHECKING:
+    from data import BucketedDataset
 
 from serialization import (
     get_bucket_sizes,
+    get_entries,
     get_entry_idx_from_bucket,
     read_bucket_index_header,
 )
@@ -96,3 +100,44 @@ class EpochBatches:
                 resolved_batch.append(actual_entry_idx)
 
             yield (bucket_id, resolved_batch)
+
+
+class BucketEntries:
+    """
+    Iterable for all entries in a specific bucket that supports len().
+
+    Args:
+        dataset: BucketedDataset instance
+        bucket_id: ID of the bucket to iterate over
+    """
+
+    def __init__(self, dataset: "BucketedDataset", bucket_id: int):
+        self.dataset = dataset
+        self.bucket_id = bucket_id
+
+        bucket_sizes = get_bucket_sizes(dataset.bucket_index_file)
+
+        if bucket_id >= len(bucket_sizes):
+            raise ValueError(
+                f"Bucket ID {bucket_id} is out of range (max: {len(bucket_sizes) - 1})"
+            )
+
+        self.bucket_size = bucket_sizes[bucket_id]
+
+    def __len__(self) -> int:
+        return self.bucket_size
+
+    def __iter__(self) -> Generator[tuple[int, list[int]], None, None]:
+        """Yield (original_line_number, src_tokens) for each entry in the bucket."""
+        for idx_in_bucket in range(self.bucket_size):
+            entry_idx = get_entry_idx_from_bucket(
+                self.dataset.bucket_index_file, self.bucket_id, idx_in_bucket
+            )
+            entries = get_entries(
+                self.dataset.index_file,
+                self.dataset.data_file,
+                self.dataset.data_file_size,
+                [entry_idx],
+            )
+            _, original_line_number, src_tokens, _ = entries[0]
+            yield (original_line_number, src_tokens)
