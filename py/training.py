@@ -1,3 +1,5 @@
+import os
+
 import torch
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
@@ -11,13 +13,107 @@ from params import pad
 from util import get_device
 
 
-def init() -> tuple[torch.device, Transformer, AdamW, CrossEntropyLoss, SummaryWriter]:
+def save_checkpoint(
+    model: Transformer,
+    optimizer: AdamW,
+    epoch: int,
+    loss: float,
+    checkpoint_dir: str,
+) -> None:
+    """Save training checkpoint with model weights and metadata in separate files."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # Save model weights separately
+    model_weights_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch}.pt")
+    torch.save(model.state_dict(), model_weights_path)
+
+    # Save checkpoint metadata (without model weights)
+    checkpoint_metadata = {
+        "epoch": epoch,
+        "model_weights_file": f"model_epoch_{epoch}.pt",
+        "optimizer_state_dict": optimizer.state_dict(),
+        "loss": loss,
+        "rng_state": torch.get_rng_state(),
+        "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
+    torch.save(checkpoint_metadata, checkpoint_path)
+
+    # Also save as latest checkpoint and model weights
+    latest_checkpoint_path = os.path.join(checkpoint_dir, "checkpoint_latest.pt")
+    latest_model_path = os.path.join(checkpoint_dir, "model_latest.pt")
+
+    checkpoint_metadata["model_weights_file"] = "model_latest.pt"
+    torch.save(checkpoint_metadata, latest_checkpoint_path)
+    torch.save(model.state_dict(), latest_model_path)
+
+    print(f"Checkpoint saved: {checkpoint_path}")
+    print(f"Model weights saved: {model_weights_path}")
+
+
+def load_checkpoint(
+    model: Transformer, optimizer: AdamW, checkpoint_path: str
+) -> tuple[int, float]:
+    """Load training checkpoint and restore model, optimizer state, and RNG state."""
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    # Load model weights from separate file
+    checkpoint_dir = os.path.dirname(checkpoint_path)
+    model_weights_file = checkpoint["model_weights_file"]
+    model_weights_path = os.path.join(checkpoint_dir, model_weights_file)
+
+    model_state_dict = torch.load(model_weights_path, map_location="cpu")
+    model.load_state_dict(model_state_dict)
+
+    # Load optimizer state
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    # Restore RNG states
+    torch.set_rng_state(checkpoint["rng_state"])
+    if checkpoint.get("cuda_rng_state") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+
+    epoch = checkpoint["epoch"]
+    loss = checkpoint["loss"]
+    print(f"Checkpoint loaded: {checkpoint_path} (epoch {epoch}, loss: {loss:.4f})")
+    print(f"Model weights loaded: {model_weights_path}")
+    return epoch, loss
+
+
+def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
+    """Find the latest checkpoint file."""
+    latest_path = os.path.join(checkpoint_dir, "checkpoint_latest.pt")
+    if os.path.exists(latest_path):
+        return latest_path
+    return None
+
+
+def init(
+    checkpoint_dir: str,
+    resume_from_checkpoint: bool = True,
+) -> tuple[torch.device, Transformer, AdamW, CrossEntropyLoss, SummaryWriter, int]:
     device = get_device()
     model = Transformer().to(device)
     optimizer = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.98), eps=1e-10)
     criterion = CrossEntropyLoss(ignore_index=pad)
     writer = SummaryWriter()  # type: ignore
-    return device, model, optimizer, criterion, writer
+
+    start_epoch = 1
+
+    if resume_from_checkpoint:
+        checkpoint_path = find_latest_checkpoint(checkpoint_dir)
+        if checkpoint_path:
+            try:
+                last_epoch, _ = load_checkpoint(model, optimizer, checkpoint_path)
+                start_epoch = last_epoch + 1
+                print(f"Resuming training from epoch {start_epoch}")
+            except Exception as e:
+                print(f"Failed to load checkpoint: {e}")
+                print("Starting training from scratch")
+        else:
+            print("No checkpoint found, starting training from scratch")
+
+    return device, model, optimizer, criterion, writer, start_epoch
 
 
 def train_one_epoch(
@@ -28,7 +124,7 @@ def train_one_epoch(
     criterion: CrossEntropyLoss,
     writer: SummaryWriter,
     epoch: int,
-) -> None:
+) -> float:
     model.train()
     train_batches = EpochBatches(
         trainset.bucket_index_file,
@@ -70,6 +166,7 @@ def train_one_epoch(
     avg_train_loss = total_loss / num_batches
     writer.add_scalar("loss/epoch/train", avg_train_loss, epoch)  # type: ignore
     print(f"Average training loss for epoch {epoch}: {avg_train_loss:.4f}")
+    return avg_train_loss
 
 
 def evaluate(
@@ -79,7 +176,7 @@ def evaluate(
     criterion: CrossEntropyLoss,
     writer: SummaryWriter,
     epoch: int,
-) -> None:
+) -> float:
     model.eval()
     val_batches = EpochBatches(
         valset.bucket_index_file,
@@ -108,3 +205,4 @@ def evaluate(
     epoch_loss = losses.mean().item()
     writer.add_scalar("loss/epoch/val", epoch_loss, epoch)  # type: ignore
     print(f"Validation loss for epoch {epoch}: {epoch_loss}")
+    return epoch_loss
