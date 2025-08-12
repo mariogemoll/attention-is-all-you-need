@@ -1,6 +1,7 @@
 import torch
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from batching import EpochBatches
@@ -10,12 +11,13 @@ from params import pad
 from util import get_device
 
 
-def init() -> tuple[torch.device, Transformer, AdamW, CrossEntropyLoss]:
+def init() -> tuple[torch.device, Transformer, AdamW, CrossEntropyLoss, SummaryWriter]:
     device = get_device()
     model = Transformer().to(device)
     optimizer = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.98), eps=1e-10)
     criterion = CrossEntropyLoss(ignore_index=pad)
-    return device, model, optimizer, criterion
+    writer = SummaryWriter()  # type: ignore
+    return device, model, optimizer, criterion, writer
 
 
 def train_one_epoch(
@@ -24,6 +26,7 @@ def train_one_epoch(
     model: Transformer,
     optimizer: AdamW,
     criterion: CrossEntropyLoss,
+    writer: SummaryWriter,
     epoch: int,
 ) -> None:
     model.train()
@@ -37,6 +40,9 @@ def train_one_epoch(
     )
 
     pbar = tqdm(train_batches, desc=f"Epoch {epoch}")
+    total_loss = 0.0
+    num_batches = 0
+
     for batch_id, entry_ids in pbar:
         seq_len = (batch_id + 1) * trainset.step_size
         enc_input, dec_input, dec_target = get_tensors(
@@ -50,8 +56,20 @@ def train_one_epoch(
         out = model.decode(enc_input, memory, dec_input)
         loss = criterion(out.view(-1, out.size(-1)), dec_target.view(-1))
         loss.backward()
-        pbar.set_postfix({"loss": loss.item()})
+
+        # Log training loss
+        current_loss = loss.item()
+        total_loss += current_loss
+        num_batches += 1
+        global_step = (epoch - 1) * len(train_batches) + num_batches
+        writer.add_scalar("loss/batch/train", current_loss, global_step)  # type: ignore
+        pbar.set_postfix({"loss": current_loss})
         optimizer.step()
+
+    # Log average training loss for the epoch
+    avg_train_loss = total_loss / num_batches
+    writer.add_scalar("loss/epoch/train", avg_train_loss, epoch)  # type: ignore
+    print(f"Average training loss for epoch {epoch}: {avg_train_loss:.4f}")
 
 
 def evaluate(
@@ -59,6 +77,7 @@ def evaluate(
     valset: BucketedDataset,
     model: Transformer,
     criterion: CrossEntropyLoss,
+    writer: SummaryWriter,
     epoch: int,
 ) -> None:
     model.eval()
@@ -87,4 +106,5 @@ def evaluate(
             losses[i] = loss
             pbar.set_postfix({"loss": loss.item()})
     epoch_loss = losses.mean().item()
+    writer.add_scalar("loss/epoch/val", epoch_loss, epoch)  # type: ignore
     print(f"Validation loss for epoch {epoch}: {epoch_loss}")
