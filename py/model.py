@@ -46,6 +46,7 @@ class Transformer(nn.Module):
         self.encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=num_model_dims, nhead=num_heads, batch_first=True),
             num_layers=num_layers,
+            enable_nested_tensor=False,
         )
         self.decoder = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(d_model=num_model_dims, nhead=num_heads, batch_first=True),
