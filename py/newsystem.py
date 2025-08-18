@@ -43,12 +43,12 @@ def run():
 
     # num_tokens = 1048576 * 16
     # num_tokens = 1048576
-    bucket_idx = 8
+    bucket_idx = 0
     seq_len = (bucket_idx + 1) * 16
     # batch_size = 65536
    # batch_size = 16384
-    batch_size = 4096
-    # batch_size = 4
+    # batch_size = 4096
+    batch_size = 4
     # batch_size = 8192
     # tokens_per_batch = seq_len * batch_size
     # num_batches = int(num_tokens // tokens_per_batch)
@@ -83,6 +83,12 @@ def run():
 
         bucket_entries = iter(bucket_entries)
         all_inputs_consumed = False
+        
+        # Keep track of which batch positions are occupied and by which sequences
+        batch_positions = {}  # line_number -> batch_position
+        position_to_line = {}  # batch_position -> line_number
+        next_available_position = 0
+        
         while True:
             while not all_inputs_consumed and (cache_size - len(sequences)) >= batch_size:
                 print('Filling cache...')
@@ -90,12 +96,12 @@ def run():
                 if len(batch) == 0:
                     all_inputs_consumed = True
                     break
-                enc_input = []
+                enc_input_list = []
                 for _, src_tokens in batch:
                     # Pad the source tokens to seq_len
                     padded_src = src_tokens + [pad] * (seq_len - len(src_tokens))
-                    enc_input.append(padded_src)
-                enc_input_tensor = torch.tensor(enc_input, dtype=torch.long, device=device)
+                    enc_input_list.append(padded_src)
+                enc_input_tensor = torch.tensor(enc_input_list, dtype=torch.long, device=device)
                 print('input tensor shape', enc_input_tensor.shape)
                 encoded = model.encode(enc_input_tensor)
                 for i in range(len(batch)):
@@ -106,20 +112,63 @@ def run():
                     encodings_cache[cache_loc, :, :] = encoded[i]
                     sequences[batch[i][0]] = cache_loc
 
-            batch = dict(islice(sequences.items(), batch_size))
-            if len(batch) == 0:
+            # Get current batch of sequences
+            current_sequences = dict(islice(sequences.items(), batch_size))
+            if len(current_sequences) == 0:
                 print('No more sequences to decode')
                 break
 
+            # Update batch positions for new sequences
+            for line_number in current_sequences:
+                if line_number not in batch_positions:
+                    # Find next available position or reuse a freed one
+                    pos = None
+                    # First try to find a freed position
+                    for i in range(batch_size):
+                        if i not in position_to_line:
+                            pos = i
+                            break
+                    
+                    # If no freed position, use next_available_position but constrain to batch_size
+                    if pos is None:
+                        while next_available_position in position_to_line and next_available_position < batch_size:
+                            next_available_position += 1
+                        if next_available_position < batch_size:
+                            pos = next_available_position
+                            next_available_position += 1
+                        else:
+                            # This should not happen if batch management is correct
+                            raise RuntimeError(f"No available batch position for new sequence {line_number}")
+                    
+                    batch_positions[line_number] = pos
+                    position_to_line[pos] = line_number
+                    
+                    # Update tensors for this new sequence
+                    cache_loc = current_sequences[line_number]
+                    enc_input[pos] = tokens_cache[cache_loc, 0, :]
+                    memory[pos] = encodings_cache[cache_loc, :, :]
+            
+            # Update dec_input for all current sequences (as it changes each iteration)
+            for line_number, cache_loc in current_sequences.items():
+                pos = batch_positions[line_number]
+                dec_input[pos] = tokens_cache[cache_loc, 1, :]
+            
 
-            cache_locs = list(batch.values())
-            enc_input = tokens_cache[cache_locs, 0, :]
-            memory = encodings_cache[cache_locs, :, :]
-            dec_input = tokens_cache[cache_locs, 1, :]
-
-            # print('enc_input', enc_input)
-            # print('dec_input', dec_input)
-            result = model.decode(enc_input, memory, dec_input)
+            # Create tensors with only the active sequences for this batch
+            active_batch_size = len(current_sequences)
+            active_enc_input = torch.empty((active_batch_size, seq_len), dtype=torch.long, device=device)
+            active_memory = torch.empty((active_batch_size, seq_len, d_model), device=device)
+            active_dec_input = torch.empty((active_batch_size, seq_len), dtype=torch.long, device=device)
+            
+            batch_pos_to_active_idx = {}
+            for active_idx, (line_number, cache_loc) in enumerate(current_sequences.items()):
+                batch_pos = batch_positions[line_number]
+                batch_pos_to_active_idx[batch_pos] = active_idx
+                active_enc_input[active_idx] = enc_input[batch_pos]
+                active_memory[active_idx] = memory[batch_pos]
+                active_dec_input[active_idx] = dec_input[batch_pos]
+            
+            result = model.decode(active_enc_input, active_memory, active_dec_input)
 
 
             # argmaxed = result.argmax(dim=-1)
@@ -127,12 +176,14 @@ def run():
             # time.sleep(3)
 
             # Go through the result
+            sequences_to_remove = []
 
-            for i, (line_number, cache_loc) in enumerate(batch.items()):
+            for active_idx, (line_number, cache_loc) in enumerate(current_sequences.items()):
+                batch_pos = batch_positions[line_number]
                 # Look at the newly generated token (at the current length of target tokens)
                 current_tgt_len = decoded_seq_len_cache[cache_loc]
 
-                new_token = int(result[i][current_tgt_len - 1].argmax().item())
+                new_token = int(result[active_idx][current_tgt_len - 1].argmax().item())
 
 
                 if new_token == pad:
@@ -149,6 +200,7 @@ def run():
                     # print('final sequence', tokenizer.decode(final_sequence), spillovers)
                     sequences.pop(line_number, None)
                     cache_free_list.put(cache_loc)
+                    sequences_to_remove.append(line_number)
                     num_sequences_completed += 1
                     pbar.update(1)
                 elif current_tgt_len >= seq_len - 1:
@@ -164,12 +216,20 @@ def run():
                     spillovers.append((line_number, enc_input_tokens, dec_input_tokens))
                     sequences.pop(line_number, None)
                     cache_free_list.put(cache_loc)
+                    sequences_to_remove.append(line_number)
                     num_sequences_completed += 1
                     pbar.update(1)
                 else:
                     # Otherwise, we just add the new token to the list
                     tokens_cache[cache_loc, 1, current_tgt_len] = new_token
                     decoded_seq_len_cache[cache_loc] += 1
+            
+            # Clean up batch positions for removed sequences
+            for line_number in sequences_to_remove:
+                if line_number in batch_positions:
+                    pos = batch_positions[line_number]
+                    del batch_positions[line_number]
+                    del position_to_line[pos]
 
 
         # print('total entries in bucket', len(bucket_entries))
