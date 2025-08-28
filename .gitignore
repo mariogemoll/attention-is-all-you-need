@@ -3,6 +3,8 @@
 __pycache__
 node_modules
 package-lock.json
+/0_download/*.tgz
+/1_input/*.annotation
 /1_input/*.de
 /1_input/*.en
 /1_input/*.sgm

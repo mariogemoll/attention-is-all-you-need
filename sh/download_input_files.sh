@@ -4,12 +4,9 @@ set -e
 # Store directory the script is in
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-DOWNLOAD_DIR=$SCRIPT_DIR/../1_input
+DOWNLOAD_DIR=$SCRIPT_DIR/../0_download
 
-# Create a temporary directory with a random name under /tmp
-TMP_DIR=$(mktemp -d /tmp/download.XXXXXX)
-echo "Temporary directory: " $TMP_DIR
-cd $TMP_DIR
+cd $DOWNLOAD_DIR
 
 echo "Downloading files..."
 URLS=(
@@ -21,35 +18,23 @@ URLS=(
 )
 
 touch config.txt
+
+# Only add to config.txt if file does not exist
 for url in "${URLS[@]}"; do
-    echo "url =" $url >> config.txt
-    echo "output =" $(basename $url) >> config.txt
+    output_file=$(basename "$url")
+    if [ ! -f "$output_file" ]; then
+        echo "url = $url" >> config.txt
+        echo "output = $output_file" >> config.txt
+    else
+        echo "$output_file already exists, skipping download."
+    fi
 done
-curl -K config.txt -Z
 
-# Extract files
-echo "Extracting files..."
-tar -xzf training-parallel-europarl-v7.tgz &
-tar -xzf training-parallel-commoncrawl.tgz &
-tar -xzf training-parallel-nc-v9.tgz &
-tar -xzf dev.tgz &
-tar -xzf test-full.tgz &
+# Only run curl if there are files to download
+if [ -s config.txt ]; then
+    curl -K config.txt -Z
+else
+    echo "All files already exist. No downloads needed."
+fi
 
-wait
-
-echo "Moving the relevant files to the download directory..."
-mv $TMP_DIR/training/europarl-v7.de-en.en $DOWNLOAD_DIR
-mv $TMP_DIR/training/europarl-v7.de-en.de $DOWNLOAD_DIR
-mv $TMP_DIR/commoncrawl.de-en.en $DOWNLOAD_DIR
-mv $TMP_DIR/commoncrawl.de-en.de $DOWNLOAD_DIR
-mv $TMP_DIR/training/news-commentary-v9.de-en.en $DOWNLOAD_DIR
-mv $TMP_DIR/training/news-commentary-v9.de-en.de $DOWNLOAD_DIR
-mv $TMP_DIR/dev/newstest2013.en $DOWNLOAD_DIR
-mv $TMP_DIR/dev/newstest2013.de $DOWNLOAD_DIR
-mv $TMP_DIR/test-full/newstest2014-deen-ref.en.sgm $DOWNLOAD_DIR
-mv $TMP_DIR/test-full/newstest2014-deen-ref.de.sgm $DOWNLOAD_DIR
-
-echo "Deleting the temporary directory..."
-rm -rf $TMP_DIR
-
-echo "Done."
+rm config.txt
