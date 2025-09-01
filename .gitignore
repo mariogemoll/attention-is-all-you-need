@@ -19,6 +19,7 @@ package-lock.json
 /4_tokens/*.bin
 /4_tokens/*.bidx
 /4_tokens/*.idx
+/5_checkpoints/*.pt
 /.claude
 /CLAUDE.md
 /py/seqs_pb2.py
