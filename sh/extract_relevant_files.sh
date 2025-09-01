@@ -35,7 +35,7 @@ mv $TMP_DIR/training/news-commentary-v9.de-en.de $INPUT_DIR
 mv $TMP_DIR/dev/newstest2013.en $INPUT_DIR
 mv $TMP_DIR/dev/newstest2013.de $INPUT_DIR
 mv $TMP_DIR/test-full/newstest2014-deen-ref.en.sgm $INPUT_DIR
-mv $TMP_DIR/test-full/newstest2014-deen-ref.de.sgm $INPUT_DIR
+mv $TMP_DIR/test-full/newstest2014-deen-src.de.sgm $INPUT_DIR
 
 echo "Deleting the temporary directory..."
 rm -rf $TMP_DIR
