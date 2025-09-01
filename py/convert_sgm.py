@@ -18,8 +18,11 @@ def get_data(doc_nodes):  # type: ignore
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
-        print(f"Usage: python {sys.argv[0]} src_input tgt_input src_output tgt_output")
+    if len(sys.argv) != 7:
+        print(
+            f"Usage: python {sys.argv[0]} src_input tgt_input src_output tgt_output docinfo_output "
+            "metadata_output"
+        )
         sys.exit(1)
 
     src_input = minidom.parse(sys.argv[1])
@@ -31,12 +34,19 @@ if __name__ == "__main__":
 
     assert src.keys() == tgt.keys()
 
-    count = 0
-    with open(sys.argv[3], "w") as src_output, open(sys.argv[4], "w") as tgt_output:
-        for docid, segments in src.items():
+    seg_idx = 0
+    with open(sys.argv[3], "w") as src_output, open(sys.argv[4], "w") as tgt_output, open(
+        sys.argv[5], "w"
+    ) as docinfo_output, open(sys.argv[6], "wb") as metadata_output:
+        for doc_idx, (docid, segments) in enumerate(src.items()):
+            # Write doc info: docid, starting seg idx, number of segments
+            docinfo_output.write(f"{docid}\t{seg_idx}\t{len(segments)}\n")
             for segid, text in segments.items():
-                count += 1
                 src_output.write(unescape(text) + "\n")
                 tgt_output.write(unescape(tgt[docid][segid]) + "\n")
+                # write doc idx to metadata as 4 byte le
+                metadata_output.write(doc_idx.to_bytes(4, byteorder="little"))
+                seg_idx += 1
 
-    print(f"{count} segments.")
+    print(f"{len(src.keys())} documents.")
+    print(f"{seg_idx} segments.")

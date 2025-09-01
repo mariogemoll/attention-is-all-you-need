@@ -8,9 +8,11 @@ package-lock.json
 /1_input/*.de
 /1_input/*.en
 /1_input/*.sgm
+/1_input/processed/*.bin
 /1_input/processed/*.de
 /1_input/processed/*.en
 /1_input/processed/*.sgm
+/1_input/processed/*.tsv
 /2_clean/*.de
 /2_clean/*.en
 /3_tokenizer/tokenizer.json
