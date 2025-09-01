@@ -295,6 +295,9 @@ def detokenize_dataset(
 
                 # Detokenize to text
                 text = detokenize_sequence(tokenizer, tokens)
+                # Check if text contains a newline
+                if "\n" in text:
+                    raise ValueError("Detokenized text contains a newline character")
                 if not text.strip():
                     empty_count += 1
 
