@@ -17,13 +17,16 @@ def main() -> None:
 
     file_path_prefix = sys.argv[1]
 
-    target_tokens_per_batch = 32768
+    target_num_tokens_per_batch = 32768
 
     with open_buckets(file_path_prefix) as dataset:
         step_size, _, _ = read_bucket_index_header(dataset.bucket_index_file)
         batches = EpochBatches(
-            dataset.bucket_index_file,
-            target_tokens_per_batch=target_tokens_per_batch,
+            num_procs=1,
+            proc_id=0,
+            bucket_index_file=dataset.bucket_index_file,
+            target_num_tokens_per_batch=target_num_tokens_per_batch,
+            rng_seed=None,
             full_batches_only=True,
         )
 

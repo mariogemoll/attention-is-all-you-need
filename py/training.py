@@ -183,12 +183,12 @@ def train_one_epoch(
 ) -> float:
     model.train()
     train_batches = EpochBatches(
+        1,
+        0,
         trainset.bucket_index_file,
-        target_tokens_per_batch=25000,
-        shuffle_within_buckets=True,
-        shuffle_batches=True,
-        random_seed=42,
-        full_batches_only=True,
+        25000,
+        42,
+        True,
     )
 
     pbar = tqdm(train_batches, desc=f"Epoch {epoch}")
@@ -235,11 +235,11 @@ def evaluate(
 ) -> float:
     model.eval()
     val_batches = EpochBatches(
+        1,
+        0,
         valset.bucket_index_file,
-        target_tokens_per_batch=25000,
-        shuffle_within_buckets=False,
-        shuffle_batches=False,
-        random_seed=42,
+        target_num_tokens_per_batch=25000,
+        rng_seed=42,
         full_batches_only=True,
     )
     with torch.no_grad():
