@@ -66,7 +66,7 @@ function checkMarkdownCells(nbPath, nb) {
       config: {
         'default': true,
         'MD047': false, // Don't require newline at end of "file"
-        'MD013': { 'line_length': 100 },
+        'MD013': { 'line_length': 91 },
         'MD041': false // Don't require H1 as first line
       }
     };
@@ -103,6 +103,20 @@ function main() {
 
   try {
     const fileContent = fs.readFileSync(notebookPath, 'utf8');
+    // Collect all lines exceeding 100 characters.
+    const lines = fileContent.split('\n');
+    const longLines = [];
+    for (const [index, line] of lines.entries()) {
+      if (line.length > 100) {
+        longLines.push(`Line ${index + 1}: ${line}`);
+      }
+    }
+    if (longLines.length > 0) {
+      throw new Error(
+        `The following lines in ${notebookPath} exceed 100 characters:\n` +
+      longLines.join('\n')
+      );
+    }
     const nb = JSON.parse(fileContent);
 
     checkOutput(notebookPath, nb);
