@@ -1,3 +1,5 @@
+import torch
+
 from data import open_buckets
 from training import clean_up_old_checkpoints, evaluate, init, save_checkpoint, train_one_epoch
 
@@ -5,6 +7,10 @@ from training import clean_up_old_checkpoints, evaluate, init, save_checkpoint, 
 def main() -> None:
     checkpoint_dir = "checkpoints"
     keep_checkpoints = 10  # Number of checkpoints to keep
+    torch.autograd.set_detect_anomaly(False)
+    torch.autograd.profiler.profile(False)  # type: ignore
+    torch.autograd.profiler.emit_nvtx(False)  # type: ignore
+    torch.set_float32_matmul_precision("high")
     device, model, optimizer, criterion, writer, start_epoch = init(
         checkpoint_dir, resume_from_checkpoint=True
     )
