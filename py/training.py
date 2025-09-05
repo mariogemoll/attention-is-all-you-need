@@ -1,17 +1,20 @@
+from __future__ import annotations
+
 import os
 import time
 
 import torch
+import torch.multiprocessing as mp
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from batch_producer import DataQueueMessage
 from batching import EpochBatches
 from data import BucketedDataset, get_tensors
 from model import Transformer
 from params import pad, target_num_tokens_per_batch
-from util import get_device
 
 
 def save_checkpoint(
@@ -146,10 +149,8 @@ def clean_up_old_checkpoints(checkpoint_dir: str, keep_last: int = 3) -> None:
 
 
 def init(
-    checkpoint_dir: str,
-    resume_from_checkpoint: bool = True,
-) -> tuple[torch.device, Transformer, AdamW, CrossEntropyLoss, SummaryWriter, int]:
-    device = get_device()
+    device: torch.device, checkpoint_dir: str, resume_from_checkpoint: bool = True
+) -> tuple[Transformer, AdamW, CrossEntropyLoss, SummaryWriter, int]:
     model = Transformer().to(device)
     optimizer = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.98), eps=1e-10)
     criterion = CrossEntropyLoss(ignore_index=pad)
@@ -170,7 +171,7 @@ def init(
         else:
             print("No checkpoint found, starting training from scratch")
 
-    return device, model, optimizer, criterion, writer, start_epoch
+    return model, optimizer, criterion, writer, start_epoch
 
 
 def time_info(
@@ -189,42 +190,39 @@ def time_info(
 
 
 def train_one_epoch(
-    device: torch.device,
-    trainset: BucketedDataset,
     model: Transformer,
     optimizer: AdamW,
     criterion: CrossEntropyLoss,
     writer: SummaryWriter,
+    data_queue: mp.Queue[DataQueueMessage],
     epoch: int,
 ) -> float:
+
     model.train()
-    train_batches = EpochBatches(
-        1,
-        0,
-        trainset.bucket_index_file,
-        target_num_tokens_per_batch,
-        42,
-        True,
-    )
+
+    initial_msg = data_queue.get()
+    assert initial_msg["type"] == "start"
+    num_batches_total = initial_msg["num_batches"]
 
     pbar = tqdm(
-        train_batches,
+        range(num_batches_total),
         desc=f"Epoch {epoch}",
         bar_format="{l_bar}{bar}|{n_fmt}/{total_fmt} [{rate_fmt}{postfix}]",
     )
     total_loss = 0.0
-    num_batches = 0
 
     # Get the current timestamp
     start_time = time.time()
-    for batch_id, entry_ids in pbar:
-        seq_len = (batch_id + 1) * trainset.step_size
-        enc_input, dec_input, dec_target = get_tensors(
-            trainset.index_file, trainset.data_file, trainset.data_file_size, seq_len, entry_ids
-        )
-        enc_input = enc_input.to(device)
-        dec_input = dec_input.to(device)
-        dec_target = dec_target.to(device)
+    for batch_idx in pbar:
+
+        global_step = (epoch - 1) * num_batches_total + batch_idx + 1
+
+        batch_start_time = time.time()
+        msg = data_queue.get()
+        assert msg["type"] == "batch"
+        enc_input, dec_input, dec_target = msg["data"]
+        tensor_acquisition = time.time() - batch_start_time
+
         optimizer.zero_grad()
         memory = model.encode(enc_input)
         out = model.decode(enc_input, memory, dec_input)
@@ -233,21 +231,23 @@ def train_one_epoch(
 
         # Log training loss
         current_loss = loss.item()
+
+        del enc_input, dec_input, dec_target, memory, out, loss
+
         total_loss += current_loss
-        num_batches += 1
-        global_step = (epoch - 1) * len(train_batches) + num_batches
 
         estimated_total_time, time_info_str = time_info(
-            len(train_batches), num_batches, start_time, time.time()
+            num_batches_total, batch_idx + 1, start_time, time.time()
         )
 
+        writer.add_scalar("time/tensor_aquisition", tensor_acquisition, global_step)  # type: ignore
         writer.add_scalar("time/estimated_total", estimated_total_time, global_step)  # type: ignore
         writer.add_scalar("loss/batch/train", current_loss, global_step)  # type: ignore
         pbar.set_postfix({"time": time_info_str, "loss": f"{current_loss:.2f} "})
         optimizer.step()
 
     # Log average training loss for the epoch
-    avg_train_loss = total_loss / num_batches
+    avg_train_loss = total_loss / num_batches_total
     writer.add_scalar("loss/epoch/train", avg_train_loss, epoch)  # type: ignore
     print(f"Average training loss for epoch {epoch}: {avg_train_loss:.4f}")
     return avg_train_loss
