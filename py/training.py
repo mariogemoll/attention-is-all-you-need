@@ -1,4 +1,5 @@
 import os
+import time
 
 import torch
 from torch.nn import CrossEntropyLoss
@@ -172,6 +173,21 @@ def init(
     return device, model, optimizer, criterion, writer, start_epoch
 
 
+def time_info(
+    batches_total: int, batches_processed: int, start_time: float, current_time: float
+) -> tuple[float, str]:
+    elapsed_time = current_time - start_time
+    elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
+    estimated_total_time = (elapsed_time / batches_processed) * batches_total
+    estimated_total_time_str = time.strftime("%M:%S", time.gmtime(estimated_total_time))
+    estimated_remaining_time = estimated_total_time - elapsed_time
+    estimated_remaining_time_str = time.strftime("%M:%S", time.gmtime(estimated_remaining_time))
+    return (
+        estimated_total_time,
+        f"{elapsed_time_str}|{estimated_remaining_time_str}|{estimated_total_time_str}",
+    )
+
+
 def train_one_epoch(
     device: torch.device,
     trainset: BucketedDataset,
@@ -191,10 +207,16 @@ def train_one_epoch(
         True,
     )
 
-    pbar = tqdm(train_batches, desc=f"Epoch {epoch}")
+    pbar = tqdm(
+        train_batches,
+        desc=f"Epoch {epoch}",
+        bar_format="{l_bar}{bar}|{n_fmt}/{total_fmt} [{rate_fmt}{postfix}]",
+    )
     total_loss = 0.0
     num_batches = 0
 
+    # Get the current timestamp
+    start_time = time.time()
     for batch_id, entry_ids in pbar:
         seq_len = (batch_id + 1) * trainset.step_size
         enc_input, dec_input, dec_target = get_tensors(
@@ -214,8 +236,14 @@ def train_one_epoch(
         total_loss += current_loss
         num_batches += 1
         global_step = (epoch - 1) * len(train_batches) + num_batches
+
+        estimated_total_time, time_info_str = time_info(
+            len(train_batches), num_batches, start_time, time.time()
+        )
+
+        writer.add_scalar("time/estimated_total", estimated_total_time, global_step)  # type: ignore
         writer.add_scalar("loss/batch/train", current_loss, global_step)  # type: ignore
-        pbar.set_postfix({"loss": current_loss})
+        pbar.set_postfix({"time": time_info_str, "loss": f"{current_loss:.2f} "})
         optimizer.step()
 
     # Log average training loss for the epoch
