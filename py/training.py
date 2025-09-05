@@ -9,7 +9,7 @@ from tqdm import tqdm
 from batching import EpochBatches
 from data import BucketedDataset, get_tensors
 from model import Transformer
-from params import pad
+from params import pad, target_num_tokens_per_batch
 from util import get_device
 
 
@@ -186,7 +186,7 @@ def train_one_epoch(
         1,
         0,
         trainset.bucket_index_file,
-        25000,
+        target_num_tokens_per_batch,
         42,
         True,
     )
@@ -238,7 +238,7 @@ def evaluate(
         1,
         0,
         valset.bucket_index_file,
-        target_num_tokens_per_batch=25000,
+        target_num_tokens_per_batch,
         rng_seed=42,
         full_batches_only=True,
     )
