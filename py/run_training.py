@@ -9,6 +9,8 @@ def main() -> None:
         checkpoint_dir, resume_from_checkpoint=True
     )
 
+    model.compile(dynamic=True)  # type: ignore
+
     total_epochs = 10
 
     with open_buckets("../4_tokens/train") as trainset, open_buckets("../4_tokens/val") as valset:
