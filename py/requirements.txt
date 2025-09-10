@@ -2,4 +2,5 @@ numpy>=2,<3
 sacrebleu>=2,<3
 tabulate==0.9
 tensorboard>=2,<3
+tokenizers==0.22.0
 tqdm>=4,<5
