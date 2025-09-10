@@ -28,6 +28,6 @@ nbqa flake8 --show-source *.ipynb
 
 nbqa isort --check-only --diff *.ipynb
 
-nbqa black --check --diff *.ipynb
+nbqa black --check --diff --line-length=91 *.ipynb
 
 nbqa mypy --strict --pretty *.ipynb
