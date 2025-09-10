@@ -18,4 +18,4 @@ num_epochs = 20
 
 seq_len_step_size = 16
 
-target_num_tokens_per_batch = 25000
+target_num_tokens_per_batch = 20000
