@@ -20,4 +20,4 @@ black --force-exclude 'seqs_pb2\.(py|pyi)$|\.ipynb$' .
 
 nbqa isort *.ipynb
 
-nbqa black *.ipynb
+nbqa black --line-length=91 *.ipynb
