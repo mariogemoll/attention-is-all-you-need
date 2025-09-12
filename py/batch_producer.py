@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import time
+from os import path
 from typing import Literal, TypedDict
 
 import torch
@@ -9,6 +10,7 @@ import torch.multiprocessing as mp
 
 from batching import EpochBatches
 from data import get_tensors, open_buckets
+from per_process_logs import redirect_stdio
 
 
 class InitMessage(TypedDict):
@@ -33,7 +35,11 @@ def batch_producer(
     data_queue: mp.Queue[DataQueueMessage],
     term_queue: mp.Queue[None],
     rng_seed: int,
+    log_dir: str,
+    epoch: int,
 ) -> None:
+    redirect_stdio(path.join(log_dir, f"batch_producer_epoch_{epoch}_proc_{proc_id}.log"))
+
     device = torch.device(device_id)
 
     try:

@@ -1,3 +1,4 @@
+import io
 import os
 import time
 
@@ -10,6 +11,7 @@ from tqdm import tqdm
 from batch_producer import DataQueueMessage, batch_producer
 from model import Transformer
 from params import pad, target_num_tokens_per_batch
+from per_process_logs import redirect_stdio
 
 
 class DummyProgressBar:
@@ -74,12 +76,20 @@ def time_info(
     )
 
 
+def fd_to_textio(fd: int) -> io.TextIOWrapper:
+    return io.TextIOWrapper(
+        os.fdopen(fd, "wb", buffering=0), encoding="utf-8", line_buffering=True, errors="replace"
+    )
+
+
 def train_one_epoch(
     rank: int,
     world_size: int,
+    log_dir: str,
     epoch: int,
     model: DDP,
     optimizer: torch.optim.Optimizer,
+    tqdm_output: io.TextIOWrapper,
 ) -> None:
 
     data_queue: mp.Queue[DataQueueMessage] = mp.Queue(maxsize=10)
@@ -98,6 +108,8 @@ def train_one_epoch(
             data_queue,
             term_queue,
             rng_seed,
+            log_dir,
+            epoch,
         ),
     )
     batch_producer_proc.start()
@@ -115,6 +127,7 @@ def train_one_epoch(
             range(num_batches),
             desc=f"Epoch {epoch}",
             bar_format="{l_bar}{bar}|{n_fmt}/{total_fmt} [{rate_fmt}{postfix}]",
+            file=tqdm_output,
         )
     else:
         pbar = DummyProgressBar()
@@ -171,8 +184,11 @@ def train_one_epoch(
         batch_producer_proc.join()
 
 
-def train_ddp_worker(rank: int, world_size: int, epochs: int = 10) -> None:
+def train_ddp_worker(rank: int, world_size: int, log_dir: str, epochs: int = 10) -> None:
     """Main training function for each DDP worker process."""
+    console_out, console_err = redirect_stdio(
+        os.path.join(log_dir, f"trainer_proc_{rank}.log"), also_console=rank == 0
+    )
     print(f"Running DDP training on rank {rank} of {world_size}")
 
     # Setup DDP
@@ -195,7 +211,7 @@ def train_ddp_worker(rank: int, world_size: int, epochs: int = 10) -> None:
         # Training loop with dummy data
         model.train()  # type: ignore
         for epoch in range(epochs):
-            train_one_epoch(rank, world_size, epoch, model, optimizer)
+            train_one_epoch(rank, world_size, log_dir, epoch, model, optimizer, console_err)
 
     finally:
         cleanup_ddp()
@@ -205,6 +221,8 @@ def launch_ddp_training(
     world_size: int | None = None, epochs: int = 10, num_batches: int = 100
 ) -> None:
     """Launch DDP training across multiple GPUs."""
+
+    log_dir = f"../logs/ddp_{time.strftime('%Y%m%d_%H%M%S')}"
     # Set multiprocessing start method for CUDA tensor sharing
     mp.set_start_method("spawn", force=True)
 
@@ -221,7 +239,7 @@ def launch_ddp_training(
 
     # Spawn training processes
     mp.spawn(  # type: ignore
-        train_ddp_worker, args=(world_size, epochs), nprocs=world_size, join=True
+        train_ddp_worker, args=(world_size, log_dir, epochs), nprocs=world_size, join=True
     )
 
 
