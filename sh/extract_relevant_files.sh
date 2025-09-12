@@ -15,7 +15,7 @@ cd $DOWNLOAD_DIR
 
 # Extract files
 echo "Extracting files..."
-tar -xzf training-parallel-europarl-v7.tgz -C $TMP_DIR &
+tar -xzf de-en.tgz -C $TMP_DIR &
 tar -xzf training-parallel-commoncrawl.tgz -C $TMP_DIR &
 tar -xzf training-parallel-nc-v9.tgz -C $TMP_DIR &
 tar -xzf dev.tgz -C $TMP_DIR &
@@ -24,8 +24,8 @@ tar -xzf test-full.tgz -C $TMP_DIR &
 wait
 
 echo "Moving the relevant files to the input directory..."
-mv $TMP_DIR/training/europarl-v7.de-en.en $INPUT_DIR
-mv $TMP_DIR/training/europarl-v7.de-en.de $INPUT_DIR
+mv $TMP_DIR/europarl-v7.de-en.en $INPUT_DIR
+mv $TMP_DIR/europarl-v7.de-en.de $INPUT_DIR
 mv $TMP_DIR/commoncrawl.de-en.en $INPUT_DIR
 mv $TMP_DIR/commoncrawl.de-en.de $INPUT_DIR
 mv $TMP_DIR/commoncrawl.de-en.annotation $INPUT_DIR

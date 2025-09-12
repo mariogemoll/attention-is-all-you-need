@@ -1,20 +1,62 @@
+import torch
+import torch.multiprocessing as mp
+
+from batch_producer import DataQueueMessage, batch_producer
 from data import open_buckets
+from params import target_num_tokens_per_batch
 from training import clean_up_old_checkpoints, evaluate, init, save_checkpoint, train_one_epoch
 
 
 def main() -> None:
     checkpoint_dir = "checkpoints"
     keep_checkpoints = 10  # Number of checkpoints to keep
-    device, model, optimizer, criterion, writer, start_epoch = init(
-        checkpoint_dir, resume_from_checkpoint=True
+    torch.autograd.set_detect_anomaly(False)
+    torch.autograd.profiler.profile(False)  # type: ignore
+    torch.autograd.profiler.emit_nvtx(False)  # type: ignore
+    torch.set_float32_matmul_precision("high")
+
+    mp.set_start_method("spawn", force=True)
+
+    device_id = "cuda:0"
+    device = torch.device(device_id)
+
+    model, optimizer, criterion, writer, start_epoch = init(
+        device, checkpoint_dir, resume_from_checkpoint=True
     )
+
+    model.compile(dynamic=True)  # type: ignore
 
     total_epochs = 10
 
-    with open_buckets("../4_tokens/train") as trainset, open_buckets("../4_tokens/val") as valset:
+    with open_buckets("../4_tokens/val") as valset:
         for epoch in range(start_epoch, total_epochs + 1):
+
+            data_queue: mp.Queue[DataQueueMessage] = mp.Queue(maxsize=10)
+            term_queue: mp.Queue[None] = mp.Queue()
+
+            rng_seed = 42 + epoch
+            # Start batch_producer as separate process
+            batch_producer_proc = mp.Process(
+                target=batch_producer,
+                args=(
+                    target_num_tokens_per_batch,
+                    "../4_tokens/val",
+                    1,
+                    0,
+                    device_id,
+                    data_queue,
+                    term_queue,
+                    rng_seed,
+                ),
+            )
+            batch_producer_proc.start()
+
             # Train for one epoch
-            train_one_epoch(device, trainset, model, optimizer, criterion, writer, epoch)
+            train_one_epoch(model, optimizer, criterion, writer, data_queue, epoch)
+
+            term_queue.put(None)
+
+            batch_producer_proc.join()
 
             # Evaluate and get validation loss
             val_loss = evaluate(device, valset, model, criterion, writer, epoch)

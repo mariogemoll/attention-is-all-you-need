@@ -1,15 +1,75 @@
 import random
-from typing import TYPE_CHECKING, BinaryIO, Generator
+from typing import BinaryIO, Generator, TypeVar
 
-if TYPE_CHECKING:
-    from data import BucketedDataset
-
+from data import BucketedDataset
 from serialization import (
     get_bucket_sizes,
     get_entries,
     get_entry_idx_from_bucket,
     read_bucket_index_header,
 )
+
+T = TypeVar("T")
+
+
+def get_subseq(rng: random.Random, num_procs: int, proc_id: int, entries: list[T]) -> list[T]:
+    # Validate that we have enough entries to distribute among all processors
+    if len(entries) < num_procs:
+        raise ValueError(
+            f"Cannot distribute {len(entries)} entries among {num_procs} processors. "
+            f"Each processor must get at least one entry."
+        )
+    entries = entries.copy()
+    rng.shuffle(entries)
+
+    # Truncate entries to the nearest multiple of num_procs
+    entries = entries[: len(entries) - (len(entries) % num_procs)]
+
+    # Distribute all entries among processors (no wasteful truncation)
+    # Each processor gets every num_procs-th element starting from proc_id
+    return entries[proc_id::num_procs]
+
+
+def get_batches(batch_size: int, full_batches_only: bool, entries: list[T]) -> list[list[T]]:
+    batches_list = [entries[i : i + batch_size] for i in range(0, len(entries), batch_size)]
+    if full_batches_only and len(batches_list[-1]) != batch_size:
+        return batches_list[:-1]
+    else:
+        return batches_list
+
+
+def get_proc_batches(
+    rng: random.Random,
+    batch_sizes: list[int],
+    full_batches_only: bool,
+    num_procs: int,
+    proc_id: int,
+    buckets: list[list[T]],
+) -> list[tuple[int, list[T]]]:
+    assert len(batch_sizes) == len(buckets)
+
+    # Randomize the contents of the buckets and get our subsets, and create batches from those
+    my_batches = [
+        get_batches(batch_sizes[i], full_batches_only, get_subseq(rng, num_procs, proc_id, bucket))
+        for i, bucket in enumerate(buckets)
+    ]
+
+    # get the number of batches per bucket
+    num_batches_per_bucket = [len(batches) for batches in my_batches]
+
+    bucket_id_seq = [i for i, count in enumerate(num_batches_per_bucket) for _ in range(count)]
+    # Shuffle the bucket IDs
+    rng.shuffle(bucket_id_seq)
+
+    cursors = [0] * len(my_batches)
+    final_batch_seq = []
+
+    for bucket_id in bucket_id_seq:
+        if cursors[bucket_id] < len(my_batches[bucket_id]):
+            final_batch_seq.append((bucket_id, my_batches[bucket_id][cursors[bucket_id]]))
+            cursors[bucket_id] += 1
+
+    return final_batch_seq
 
 
 class EpochBatches:
@@ -19,7 +79,7 @@ class EpochBatches:
     Args:
         bucket_index_file: Open binary file handle for the bucket index file (.bidx)
         bucket_index_path: Path to the bucket index file (for reading header/sizes)
-        target_tokens_per_batch: Target number of tokens per batch
+        target_num_tokens_per_batch: Target number of tokens per batch
         shuffle_within_buckets: Whether to shuffle entries within each bucket
         shuffle_batches: Whether to shuffle the order of batches
         random_seed: Random seed for reproducibility
@@ -28,72 +88,47 @@ class EpochBatches:
 
     def __init__(
         self,
+        num_procs: int,
+        proc_id: int,
         bucket_index_file: BinaryIO,
-        target_tokens_per_batch: int,
-        shuffle_within_buckets: bool = True,
-        shuffle_batches: bool = True,
-        random_seed: int | None = None,
+        target_num_tokens_per_batch: int,
+        rng_seed: int | float | str | bytes | bytearray | None,
         full_batches_only: bool = False,
     ):
+        assert proc_id < num_procs
         self.bucket_index_file = bucket_index_file
-        self.target_tokens_per_batch = target_tokens_per_batch
-        self.shuffle_within_buckets = shuffle_within_buckets
-        self.shuffle_batches = shuffle_batches
-        self.random_seed = random_seed
-        self.full_batches_only = full_batches_only
 
-        # Pre-calculate batch schedule and total count
-        if self.random_seed is not None:
-            random.seed(self.random_seed)
+        header = read_bucket_index_header(self.bucket_index_file)
+        step_size, num_buckets, bucket_offsets = header
+        bucket_sizes = get_bucket_sizes(self.bucket_index_file)
 
-        header = read_bucket_index_header(bucket_index_file)
-        self.step_size, self.num_buckets, self.bucket_offsets = header
-        self.bucket_sizes = get_bucket_sizes(bucket_index_file)
+        # Calculate batch sizes for the buckets
+        buckets = [list(range(size)) for size in bucket_sizes]
+        batch_sizes = [
+            max(1, target_num_tokens_per_batch // (step_size * (i + 1)))
+            for i in range(len(buckets))
+        ]
+        # Round down to nearest multiple of 16
+        batch_sizes = [size - (size % 16) for size in batch_sizes]
 
-        # Store shuffled bucket entries
-        self.bucket_shuffled_entries = {}
-        for bucket_id, size in enumerate(self.bucket_sizes):
-            if size > 0:  # Skip empty buckets
-                entry_indices_in_bucket = list(range(size))
-                if self.shuffle_within_buckets:
-                    random.shuffle(entry_indices_in_bucket)
-                self.bucket_shuffled_entries[bucket_id] = entry_indices_in_bucket
-
-        # Create batch schedule (bucket_id, start_idx, batch_size)
-        self.batch_schedule = []
-        for bucket_id, size in enumerate(self.bucket_sizes):
-            if size > 0:
-                # Calculate batch size for this bucket based on max sequence length
-                max_seq_len = (bucket_id + 1) * self.step_size
-                batch_size = max(1, self.target_tokens_per_batch // max_seq_len)
-
-                # Add batch schedule entries for this bucket
-                for i in range(0, size, batch_size):
-                    actual_batch_size = min(batch_size, size - i)
-
-                    # Skip incomplete batches if full_batches_only is True
-                    if self.full_batches_only and actual_batch_size < batch_size:
-                        continue
-
-                    self.batch_schedule.append((bucket_id, i, actual_batch_size))
-
-        # Shuffle the batch schedule
-        if self.shuffle_batches:
-            random.shuffle(self.batch_schedule)
+        rng = random.Random(rng_seed)
+        self.batches = get_proc_batches(
+            rng, batch_sizes, full_batches_only, num_procs, proc_id, buckets
+        )
 
     def __len__(self) -> int:
-        return len(self.batch_schedule)
+        return len(self.batches)
 
     def __iter__(self) -> Generator[tuple[int, list[int]], None, None]:
         # Yield batches one by one, resolving indices on demand
-        for bucket_id, batch_start_idx, batch_size in self.batch_schedule:
-            # Get the bucket-relative indices for this batch
-            shuffled_entries = self.bucket_shuffled_entries[bucket_id]
-            bucket_batch = shuffled_entries[batch_start_idx : batch_start_idx + batch_size]
+        for bucket_id, idxs in self.batches:
+            # # Get the bucket-relative indices for this batch
+            # shuffled_entries = self.bucket_shuffled_entries[bucket_id]
+            # bucket_batch = shuffled_entries[batch_start_idx : batch_start_idx + batch_size]
 
             # Resolve bucket indices to actual dataset entry indices
             resolved_batch = []
-            for entry_idx_in_bucket in bucket_batch:
+            for entry_idx_in_bucket in idxs:
                 actual_entry_idx = get_entry_idx_from_bucket(
                     self.bucket_index_file, bucket_id, entry_idx_in_bucket
                 )
@@ -111,7 +146,7 @@ class BucketEntries:
         bucket_id: ID of the bucket to iterate over
     """
 
-    def __init__(self, dataset: "BucketedDataset", bucket_id: int):
+    def __init__(self, dataset: BucketedDataset, bucket_id: int):
         self.dataset = dataset
         self.bucket_id = bucket_id
 

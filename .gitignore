@@ -22,6 +22,7 @@ package-lock.json
 /5_checkpoints/*.pt
 /.claude
 /CLAUDE.md
+/logs
 /py/seqs_pb2.py
 /py/seqs_pb2.pyi
 /tmp/*.bin

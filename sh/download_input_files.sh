@@ -10,7 +10,7 @@ cd $DOWNLOAD_DIR
 
 echo "Downloading files..."
 URLS=(
-    "https://www.statmt.org/wmt13/training-parallel-europarl-v7.tgz"
+    "https://www.statmt.org/europarl/v7/de-en.tgz"
     "https://www.statmt.org/wmt13/training-parallel-commoncrawl.tgz"
     "https://www.statmt.org/wmt14/training-parallel-nc-v9.tgz"
     "https://www.statmt.org/wmt14/dev.tgz"

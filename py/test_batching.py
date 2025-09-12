@@ -1,328 +1,120 @@
-import os
-import tempfile
+from random import Random
+from typing import Sequence
 
-from batching import EpochBatches
-from serialization import append_to_dataset, create_bucket_index
+import pytest
 
-
-def test_epoch_batches_basic() -> None:
-    """Test basic functionality of EpochBatches."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        dataset_path = os.path.join(tmp_dir, "test_epoch")
-
-        # Create test dataset with entries of different lengths for different buckets
-        with open(dataset_path + ".bin", "wb") as data_file, open(
-            dataset_path + ".idx", "wb"
-        ) as index_file:
-            # These entries should go into different buckets (step_size=16)
-            append_to_dataset(
-                data_file, index_file, 1, 100, [10] * 5, [20] * 8
-            )  # max=8 -> bucket 0
-            append_to_dataset(
-                data_file, index_file, 2, 200, [30] * 10, [40] * 12
-            )  # max=12 -> bucket 0
-            append_to_dataset(
-                data_file, index_file, 3, 300, [50] * 20, [60] * 18
-            )  # max=20 -> bucket 1
-            append_to_dataset(
-                data_file, index_file, 4, 400, [70] * 25, [80] * 30
-            )  # max=30 -> bucket 1
-            append_to_dataset(
-                data_file, index_file, 5, 500, [90] * 35, [100] * 40
-            )  # max=40 -> bucket 2
-
-        # Create bucket index
-        create_bucket_index(dataset_path, step_size=16, max_length=64)
-
-        # Test EpochBatches with a reasonable target tokens per batch
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-            )
-
-            # Should have some batches
-            assert len(epoch_batches) > 0
-
-            # Test iteration
-            batch_count = 0
-            for bucket_id, batch_indices in epoch_batches:
-                assert isinstance(bucket_id, int)
-                assert isinstance(batch_indices, list)
-                assert all(isinstance(idx, int) for idx in batch_indices)
-                batch_count += 1
-
-            assert batch_count == len(epoch_batches)
+from batching import get_proc_batches
 
 
-def test_epoch_batches_full_batches_only_false() -> None:
-    """Test EpochBatches with full_batches_only=False (default behavior)."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        dataset_path = os.path.join(tmp_dir, "test_full_batches_false")
+class BatchingTestData:
+    buckets: list[list[int]]
+    batch_sizes: list[int]
+    num_procs: int
 
-        # Create dataset with entries that will produce incomplete batches
-        with open(dataset_path + ".bin", "wb") as data_file, open(
-            dataset_path + ".idx", "wb"
-        ) as index_file:
-            # Bucket 0 entries (max seq len = 16)
-            for i in range(5):  # 5 entries in bucket 0
-                append_to_dataset(data_file, index_file, 1, i, [10 + i] * 5, [20 + i] * 8)  # max=8
-
-            # Bucket 1 entries (max seq len = 32)
-            for i in range(3):  # 3 entries in bucket 1
-                append_to_dataset(
-                    data_file, index_file, 2, i + 100, [30 + i] * 20, [40 + i] * 25
-                )  # max=25
-
-        create_bucket_index(dataset_path, step_size=16, max_length=64)
-
-        # Test with full_batches_only=False
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,  # bucket 0: batch_size=4, bucket 1: batch_size=2
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-                full_batches_only=False,
-            )
-
-            # Collect all batches
-            batches = list(epoch_batches)
-
-            # Should have batches including incomplete ones
-            # Bucket 0: 5 entries / batch_size=4 -> 2 batches (4 + 1)
-            # Bucket 1: 3 entries / batch_size=2 -> 2 batches (2 + 1)
-            # Total: 4 batches
-            assert len(batches) == 4
-
-            # Check batch sizes
-            batch_sizes = [len(batch) for _, batch in batches]
-            assert 4 in batch_sizes  # Full batch from bucket 0
-            assert 1 in batch_sizes  # Incomplete batch from bucket 0
-            assert 2 in batch_sizes  # Full batch from bucket 1
-            # The incomplete batch from bucket 1 should also be size 1
+    def __init__(self, buckets: list[list[int]], batch_sizes: list[int], num_procs: int) -> None:
+        self.buckets = buckets
+        self.batch_sizes = batch_sizes
+        self.num_procs = num_procs
 
 
-def test_epoch_batches_full_batches_only_true() -> None:
-    """Test EpochBatches with full_batches_only=True."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        dataset_path = os.path.join(tmp_dir, "test_full_batches_true")
+@pytest.fixture
+def test_data() -> BatchingTestData:
+    """Pytest fixture to provide test data."""
+    # Create a set of dummy buckets
+    buckets = [list(range(1, 101)), list(range(1, 201)), list(range(1, 401))]
 
-        # Create dataset with entries that will produce incomplete batches
-        with open(dataset_path + ".bin", "wb") as data_file, open(
-            dataset_path + ".idx", "wb"
-        ) as index_file:
-            # Bucket 0 entries (max seq len = 16)
-            for i in range(5):  # 5 entries in bucket 0
-                append_to_dataset(data_file, index_file, 1, i, [10 + i] * 5, [20 + i] * 8)  # max=8
+    target_num_tokens_per_batch = 256
+    step_size = 16
+    batch_sizes = [
+        max(1, target_num_tokens_per_batch // step_size * (i + 1)) for i in range(len(buckets))
+    ]
+    num_procs = 3
 
-            # Bucket 1 entries (max seq len = 32)
-            for i in range(3):  # 3 entries in bucket 1
-                append_to_dataset(
-                    data_file, index_file, 2, i + 100, [30 + i] * 20, [40 + i] * 25
-                )  # max=25
-
-        create_bucket_index(dataset_path, step_size=16, max_length=64)
-
-        # Test with full_batches_only=True
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,  # bucket 0: batch_size=4, bucket 1: batch_size=2
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-                full_batches_only=True,
-            )
-
-            # Collect all batches
-            batches = list(epoch_batches)
-
-            # Should only have full batches
-            # Bucket 0: 5 entries / batch_size=4 -> 1 full batch (size 4), 1 incomplete dropped
-            # Bucket 1: 3 entries / batch_size=2 -> 1 full batch (size 2), 1 incomplete dropped
-            # Total: 2 batches
-            assert len(batches) == 2
-
-            # Check that all batches are full
-            batch_sizes = [len(batch) for _, batch in batches]
-            expected_full_sizes = {4, 2}  # Full batch sizes for each bucket
-            for size in batch_sizes:
-                assert size in expected_full_sizes, f"Unexpected batch size: {size}"
-
-            # Should not contain any incomplete batches (size 1 in this case)
-            assert 1 not in batch_sizes
+    return BatchingTestData(buckets=buckets, batch_sizes=batch_sizes, num_procs=num_procs)
 
 
-def test_epoch_batches_full_batches_only_comparison() -> None:
-    """Test that full_batches_only=True produces fewer batches than full_batches_only=False."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        dataset_path = os.path.join(tmp_dir, "test_comparison")
+def get_seqs_for_processes(
+    batch_sizes: list[int],
+    buckets: list[list[int]],
+    num_procs: int,
+    full_batches_only: bool,
+    rng_seed: int = 42,
+) -> list[list[tuple[int, list[int]]]]:
+    """Helper function to get sequences for all processes."""
+    results = []
 
-        # Create dataset that will definitely have incomplete batches
-        with open(dataset_path + ".bin", "wb") as data_file, open(
-            dataset_path + ".idx", "wb"
-        ) as index_file:
-            # Create 7 entries that should go to bucket 0
-            for i in range(7):
-                append_to_dataset(data_file, index_file, 1, i, [10 + i] * 3, [20 + i] * 5)  # max=5
+    for i in range(num_procs):
+        rng = Random()
+        rng.seed(rng_seed)
 
-        create_bucket_index(dataset_path, step_size=16, max_length=32)
-
-        # Test with full_batches_only=False and True
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches_all = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,  # Should give batch_size=4 for bucket 0
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-                full_batches_only=False,
-            )
-            batches_all = list(epoch_batches_all)
-
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches_full = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-                full_batches_only=True,
-            )
-            batches_full = list(epoch_batches_full)
-
-        # Should have fewer batches with full_batches_only=True
-        # 7 entries / batch_size=4 -> 2 batches (4 + 3) with False, 1 batch (4) with True
-        assert len(batches_all) == 2
-        assert len(batches_full) == 1
-
-        # All batches in full mode should be complete
-        for _, batch in batches_full:
-            # Batch size should be 4 for bucket 0
-            assert len(batch) == 4
+        proc_batches = get_proc_batches(
+            rng=rng,
+            batch_sizes=batch_sizes,
+            full_batches_only=full_batches_only,
+            num_procs=num_procs,
+            proc_id=i,
+            buckets=buckets,
+        )
+        results.append(proc_batches)
+    return results
 
 
-def test_epoch_batches_full_batches_only_edge_cases() -> None:
-    """Test edge cases for full_batches_only parameter."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        dataset_path = os.path.join(tmp_dir, "test_edge_cases")
-
-        # Create dataset where all entries exactly fill batches (no incomplete batches)
-        with open(dataset_path + ".bin", "wb") as data_file, open(
-            dataset_path + ".idx", "wb"
-        ) as index_file:
-            # Create exactly 8 entries for bucket 0 (batch_size=4 -> 2 full batches)
-            for i in range(8):
-                append_to_dataset(data_file, index_file, 1, i, [10 + i] * 3, [20 + i] * 5)  # max=5
-
-        create_bucket_index(dataset_path, step_size=16, max_length=32)
-
-        # Test both modes - should give same result when there are no incomplete batches
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches_all = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,  # batch_size=4 for bucket 0
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-                full_batches_only=False,
-            )
-            batches_all = list(epoch_batches_all)
-
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches_full = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-                full_batches_only=True,
-            )
-            batches_full = list(epoch_batches_full)
-
-        # Should have the same number of batches when all are full
-        assert len(batches_all) == len(batches_full) == 2
-
-        # All batches should have the same size
-        for (_, batch_all), (_, batch_full) in zip(batches_all, batches_full):
-            assert len(batch_all) == len(batch_full) == 4
+def reconstruct_buckets(
+    num_buckets: int, results: list[list[tuple[int, list[int]]]]
+) -> list[list[int]]:
+    """Helper function to reconstruct buckets from process results."""
+    reconstructed_buckets: list[list[int]] = [[] for _ in range(num_buckets)]
+    for batch_seq in results:
+        for bucket_id, seq in batch_seq:
+            reconstructed_buckets[bucket_id].extend(seq)
+    return reconstructed_buckets
 
 
-def test_epoch_batches_full_batches_only_empty_buckets() -> None:
-    """Test full_batches_only with some empty buckets."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        dataset_path = os.path.join(tmp_dir, "test_empty_buckets")
-
-        # Create dataset where some buckets are empty
-        with open(dataset_path + ".bin", "wb") as data_file, open(
-            dataset_path + ".idx", "wb"
-        ) as index_file:
-            # Skip bucket 1, put 3 entries in bucket 2
-            for i in range(3):
-                append_to_dataset(
-                    data_file, index_file, 1, i, [10 + i] * 33, [20 + i] * 35
-                )  # max=35 -> bucket 2
-
-        create_bucket_index(dataset_path, step_size=16, max_length=64)
-
-        # Test with full_batches_only=True
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=96,  # batch_size=2 for bucket 2 (48 tokens per sample)
-                shuffle_within_buckets=False,
-                shuffle_batches=False,
-                full_batches_only=True,
-            )
-            batches = list(epoch_batches)
-
-        # Should have 1 full batch (3 entries / batch_size=2 -> 1 full batch, 1 incomplete dropped)
-        assert len(batches) == 1
-        bucket_id, batch_indices = batches[0]
-        assert bucket_id == 2
-        assert len(batch_indices) == 2
+def get_missing(original_bucket: Sequence[int], reconstructed_bucket: Sequence[int]) -> set[int]:
+    """Helper function to find missing elements between original and reconstructed buckets."""
+    return set(original_bucket) - set(reconstructed_bucket)
 
 
-def test_epoch_batches_full_batches_only_shuffling() -> None:
-    """Test that full_batches_only works correctly with shuffling enabled."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        dataset_path = os.path.join(tmp_dir, "test_shuffle")
+def check_batch_sequences(seqs: list[list[tuple[int, list[int]]]]) -> None:
+    """Helper function to verify batch sequences have consistent bucket IDs and sizes."""
+    # Bucket ids and batch sizes must be identical across all seqs
+    # make sure all sequences have the same length
+    length = len(seqs[0])
+    for seq in seqs:
+        assert len(seq) == length
+    for i in range(length):
+        bucket_id = seqs[0][i][0]
+        batch_size = len(seqs[0][i][1])
+        for seq in seqs:
+            assert seq[i][0] == bucket_id
+            assert len(seq[i][1]) == batch_size
 
-        # Create dataset with incomplete batches
-        with open(dataset_path + ".bin", "wb") as data_file, open(
-            dataset_path + ".idx", "wb"
-        ) as index_file:
-            # 5 entries in bucket 0
-            for i in range(5):
-                append_to_dataset(data_file, index_file, 1, i, [10 + i] * 3, [20 + i] * 5)  # max=5
 
-        create_bucket_index(dataset_path, step_size=16, max_length=32)
+def test_only_full_buckets_false(test_data: BatchingTestData) -> None:
+    """Test that when full_batches_only=False, missing elements are minimal."""
+    results = get_seqs_for_processes(
+        test_data.batch_sizes, test_data.buckets, test_data.num_procs, False
+    )
+    reconstructed_buckets = reconstruct_buckets(len(test_data.buckets), results)
+    check_batch_sequences(results)
 
-        # Test with shuffling enabled and full_batches_only=True
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,  # batch_size=4
-                shuffle_within_buckets=True,
-                shuffle_batches=True,
-                random_seed=42,  # For reproducibility
-                full_batches_only=True,
-            )
-            batches = list(epoch_batches)
+    for i in range(len(test_data.buckets)):
+        missing = get_missing(test_data.buckets[i], reconstructed_buckets[i])
+        assert len(missing) < test_data.num_procs
 
-            # Should still filter out incomplete batches even with shuffling
-            assert len(batches) == 1  # Only 1 full batch of size 4
-            _, batch_indices = batches[0]
-            assert len(batch_indices) == 4
 
-        # Test that we get consistent results with the same seed
-        with open(dataset_path + ".bidx", "rb") as bucket_index_file:
-            epoch_batches_2 = EpochBatches(
-                bucket_index_file,
-                target_tokens_per_batch=64,
-                shuffle_within_buckets=True,
-                shuffle_batches=True,
-                random_seed=42,  # Same seed
-                full_batches_only=True,
-            )
-            batches_2 = list(epoch_batches_2)
-        assert len(batches) == len(batches_2)
-        # The actual indices might be different due to shuffling, but counts should match
+def test_only_full_buckets_true(test_data: BatchingTestData) -> None:
+    """Test that when full_batches_only=True, missing elements are within expected bounds."""
+    results = get_seqs_for_processes(
+        test_data.batch_sizes, test_data.buckets, test_data.num_procs, True
+    )
+    reconstructed_buckets = reconstruct_buckets(len(test_data.buckets), results)
+    check_batch_sequences(results)
+
+    for i in range(len(test_data.buckets)):
+        missing = get_missing(test_data.buckets[i], reconstructed_buckets[i])
+        assert len(missing) < test_data.batch_sizes[i] * test_data.num_procs
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

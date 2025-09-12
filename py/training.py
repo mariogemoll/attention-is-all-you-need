@@ -1,16 +1,20 @@
+from __future__ import annotations
+
 import os
+import time
 
 import torch
+import torch.multiprocessing as mp
 from torch.nn import CrossEntropyLoss
 from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from batch_producer import DataQueueMessage
 from batching import EpochBatches
 from data import BucketedDataset, get_tensors
 from model import Transformer
-from params import pad
-from util import get_device
+from params import pad, target_num_tokens_per_batch
 
 
 def save_checkpoint(
@@ -38,14 +42,6 @@ def save_checkpoint(
     }
     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
     torch.save(checkpoint_metadata, checkpoint_path)
-
-    # Also save as latest checkpoint and model weights
-    latest_checkpoint_path = os.path.join(checkpoint_dir, "checkpoint_latest.pt")
-    latest_model_path = os.path.join(checkpoint_dir, "model_latest.pt")
-
-    checkpoint_metadata["model_weights_file"] = "model_latest.pt"
-    torch.save(checkpoint_metadata, latest_checkpoint_path)
-    torch.save(model.state_dict(), latest_model_path)
 
     print(f"Checkpoint saved: {checkpoint_path}")
     print(f"Model weights saved: {model_weights_path}")
@@ -145,10 +141,8 @@ def clean_up_old_checkpoints(checkpoint_dir: str, keep_last: int = 3) -> None:
 
 
 def init(
-    checkpoint_dir: str,
-    resume_from_checkpoint: bool = True,
-) -> tuple[torch.device, Transformer, AdamW, CrossEntropyLoss, SummaryWriter, int]:
-    device = get_device()
+    device: torch.device, checkpoint_dir: str, resume_from_checkpoint: bool = True
+) -> tuple[Transformer, AdamW, CrossEntropyLoss, SummaryWriter, int]:
     model = Transformer().to(device)
     optimizer = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.98), eps=1e-10)
     criterion = CrossEntropyLoss(ignore_index=pad)
@@ -169,40 +163,58 @@ def init(
         else:
             print("No checkpoint found, starting training from scratch")
 
-    return device, model, optimizer, criterion, writer, start_epoch
+    return model, optimizer, criterion, writer, start_epoch
+
+
+def time_info(
+    batches_total: int, batches_processed: int, start_time: float, current_time: float
+) -> tuple[float, str]:
+    elapsed_time = current_time - start_time
+    elapsed_time_str = time.strftime("%M:%S", time.gmtime(elapsed_time))
+    estimated_total_time = (elapsed_time / batches_processed) * batches_total
+    estimated_total_time_str = time.strftime("%M:%S", time.gmtime(estimated_total_time))
+    estimated_remaining_time = estimated_total_time - elapsed_time
+    estimated_remaining_time_str = time.strftime("%M:%S", time.gmtime(estimated_remaining_time))
+    return (
+        estimated_total_time,
+        f"{elapsed_time_str}|{estimated_remaining_time_str}|{estimated_total_time_str}",
+    )
 
 
 def train_one_epoch(
-    device: torch.device,
-    trainset: BucketedDataset,
     model: Transformer,
     optimizer: AdamW,
     criterion: CrossEntropyLoss,
     writer: SummaryWriter,
+    data_queue: mp.Queue[DataQueueMessage],
     epoch: int,
 ) -> float:
+
     model.train()
-    train_batches = EpochBatches(
-        trainset.bucket_index_file,
-        target_tokens_per_batch=25000,
-        shuffle_within_buckets=True,
-        shuffle_batches=True,
-        random_seed=42,
-        full_batches_only=True,
+
+    initial_msg = data_queue.get()
+    assert initial_msg["type"] == "start"
+    num_batches_total = initial_msg["num_batches"]
+
+    pbar = tqdm(
+        range(num_batches_total),
+        desc=f"Epoch {epoch}",
+        bar_format="{l_bar}{bar}|{n_fmt}/{total_fmt} [{rate_fmt}{postfix}]",
     )
-
-    pbar = tqdm(train_batches, desc=f"Epoch {epoch}")
     total_loss = 0.0
-    num_batches = 0
 
-    for batch_id, entry_ids in pbar:
-        seq_len = (batch_id + 1) * trainset.step_size
-        enc_input, dec_input, dec_target = get_tensors(
-            trainset.index_file, trainset.data_file, trainset.data_file_size, seq_len, entry_ids
-        )
-        enc_input = enc_input.to(device)
-        dec_input = dec_input.to(device)
-        dec_target = dec_target.to(device)
+    # Get the current timestamp
+    start_time = time.time()
+    for batch_idx in pbar:
+
+        global_step = (epoch - 1) * num_batches_total + batch_idx + 1
+
+        batch_start_time = time.time()
+        msg = data_queue.get()
+        assert msg["type"] == "batch"
+        enc_input, dec_input, dec_target = msg["data"]
+        tensor_acquisition = time.time() - batch_start_time
+
         optimizer.zero_grad()
         memory = model.encode(enc_input)
         out = model.decode(enc_input, memory, dec_input)
@@ -211,15 +223,23 @@ def train_one_epoch(
 
         # Log training loss
         current_loss = loss.item()
+
+        del enc_input, dec_input, dec_target, memory, out, loss
+
         total_loss += current_loss
-        num_batches += 1
-        global_step = (epoch - 1) * len(train_batches) + num_batches
+
+        estimated_total_time, time_info_str = time_info(
+            num_batches_total, batch_idx + 1, start_time, time.time()
+        )
+
+        writer.add_scalar("time/tensor_aquisition", tensor_acquisition, global_step)  # type: ignore
+        writer.add_scalar("time/estimated_total", estimated_total_time, global_step)  # type: ignore
         writer.add_scalar("loss/batch/train", current_loss, global_step)  # type: ignore
-        pbar.set_postfix({"loss": current_loss})
+        pbar.set_postfix({"time": time_info_str, "loss": f"{current_loss:.2f} "})
         optimizer.step()
 
     # Log average training loss for the epoch
-    avg_train_loss = total_loss / num_batches
+    avg_train_loss = total_loss / num_batches_total
     writer.add_scalar("loss/epoch/train", avg_train_loss, epoch)  # type: ignore
     print(f"Average training loss for epoch {epoch}: {avg_train_loss:.4f}")
     return avg_train_loss
@@ -235,11 +255,11 @@ def evaluate(
 ) -> float:
     model.eval()
     val_batches = EpochBatches(
+        1,
+        0,
         valset.bucket_index_file,
-        target_tokens_per_batch=25000,
-        shuffle_within_buckets=False,
-        shuffle_batches=False,
-        random_seed=42,
+        target_num_tokens_per_batch,
+        rng_seed=42,
         full_batches_only=True,
     )
     with torch.no_grad():
