@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from batch_producer import DataQueueMessage, batch_producer
 from model import Transformer
-from params import log_base_path, pad, target_num_tokens_per_batch
+from params import log_base_path, num_epochs, pad, target_num_tokens_per_batch
 from per_process_logs import redirect_stdio
 from s3_upload import (
     create_s3_prefix_from_run_id,
@@ -244,9 +244,7 @@ def train_one_epoch(
     return avg_loss
 
 
-def train_ddp_worker(
-    rank: int, world_size: int, run_id: str, epochs: int = 10, enable_s3: bool = True
-) -> None:
+def train_ddp_worker(rank: int, world_size: int, run_id: str, enable_s3: bool = True) -> None:
     """Main training function for each DDP worker process."""
     # Create log directory using run_id and log_base_path
     log_dir = os.path.join(log_base_path, run_id)
@@ -281,7 +279,7 @@ def train_ddp_worker(
 
         # Training loop
         model.train()  # type: ignore
-        for epoch in range(epochs):
+        for epoch in range(num_epochs):
             train_one_epoch(
                 rank,
                 world_size,
@@ -302,9 +300,7 @@ def train_ddp_worker(
         cleanup_ddp()
 
 
-def launch_ddp_training(
-    world_size: int | None = None, epochs: int = 10, num_batches: int = 100, enable_s3: bool = True
-) -> None:
+def launch_ddp_training(world_size: int | None = None, enable_s3: bool = True) -> None:
     """Launch DDP training across multiple GPUs."""
 
     # Generate run ID with timestamp
@@ -342,11 +338,11 @@ def launch_ddp_training(
 
     # Spawn training processes
     mp.spawn(  # type: ignore
-        train_ddp_worker, args=(world_size, run_id, epochs, enable_s3), nprocs=world_size, join=True
+        train_ddp_worker, args=(world_size, run_id, enable_s3), nprocs=world_size, join=True
     )
 
 
 # Example usage
 if __name__ == "__main__":
     # Launch DDP training with dummy data
-    launch_ddp_training(world_size=2, epochs=3, num_batches=50)
+    launch_ddp_training(world_size=2)

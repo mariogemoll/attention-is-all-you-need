@@ -14,7 +14,7 @@ num_layers = 6
 # num_heads = 2
 # num_layers = 2
 
-num_epochs = 20
+num_epochs = 10
 
 seq_len_step_size = 16
 
