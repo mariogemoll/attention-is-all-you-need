@@ -19,3 +19,6 @@ num_epochs = 20
 seq_len_step_size = 16
 
 target_num_tokens_per_batch = 20000
+
+# Logging configuration
+log_base_path = "../logs"

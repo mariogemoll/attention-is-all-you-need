@@ -43,14 +43,6 @@ def save_checkpoint(
     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
     torch.save(checkpoint_metadata, checkpoint_path)
 
-    # Also save as latest checkpoint and model weights
-    latest_checkpoint_path = os.path.join(checkpoint_dir, "checkpoint_latest.pt")
-    latest_model_path = os.path.join(checkpoint_dir, "model_latest.pt")
-
-    checkpoint_metadata["model_weights_file"] = "model_latest.pt"
-    torch.save(checkpoint_metadata, latest_checkpoint_path)
-    torch.save(model.state_dict(), latest_model_path)
-
     print(f"Checkpoint saved: {checkpoint_path}")
     print(f"Model weights saved: {model_weights_path}")
 

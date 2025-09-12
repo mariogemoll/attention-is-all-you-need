@@ -10,8 +10,16 @@ from tqdm import tqdm
 
 from batch_producer import DataQueueMessage, batch_producer
 from model import Transformer
-from params import pad, target_num_tokens_per_batch
+from params import log_base_path, pad, target_num_tokens_per_batch
 from per_process_logs import redirect_stdio
+from s3_upload import (
+    create_s3_prefix_from_run_id,
+    get_checkpoint_files,
+    get_s3_config_from_env,
+    launch_s3_upload_background,
+    validate_s3_config,
+)
+from training import save_checkpoint
 
 
 class DummyProgressBar:
@@ -35,6 +43,49 @@ def setup_ddp(rank: int, world_size: int, backend: str = "nccl") -> None:
 
     # Set the GPU device for this process
     torch.cuda.set_device(rank)
+
+
+def launch_s3_upload_for_epoch(epoch: int, checkpoint_dir: str, run_id: str, log_dir: str) -> None:
+    """Launch S3 upload for checkpoint files of a specific epoch."""
+    try:
+        # Get S3 configuration from environment variables
+        s3_config = get_s3_config_from_env()
+
+        # Skip if no bucket name is configured (backup check)
+        if not s3_config["bucket_name"]:
+            print(f"No S3 bucket configured, skipping upload for epoch {epoch}")
+            return
+
+        # Get checkpoint files for this epoch
+        file_paths = get_checkpoint_files(checkpoint_dir, epoch)
+
+        if not file_paths:
+            print(f"No checkpoint files found for epoch {epoch}")
+            return
+
+        # Create S3 prefix for this run
+        s3_prefix = create_s3_prefix_from_run_id(run_id)
+
+        print(f"Launching S3 upload for epoch {epoch}: {len(file_paths)} files")
+        print(f"S3 destination: s3://{s3_config['bucket_name']}/{s3_prefix}/")
+
+        # Launch background upload process
+        upload_process = launch_s3_upload_background(
+            file_paths=file_paths,
+            bucket_name=s3_config["bucket_name"],
+            s3_prefix=s3_prefix,
+            log_dir=log_dir,
+            epoch=epoch,
+            aws_access_key_id=s3_config["aws_access_key_id"],
+            aws_secret_access_key=s3_config["aws_secret_access_key"],
+            aws_region=s3_config["aws_region"] or "eu-north-1",
+        )
+
+        print(f"S3 upload process started for epoch {epoch} (PID: {upload_process.pid})")
+
+    except Exception as e:
+        print(f"Failed to launch S3 upload for epoch {epoch}: {e}")
+        print("Training will continue without S3 upload for this epoch.")
 
 
 def cleanup_ddp() -> None:
@@ -88,9 +139,11 @@ def train_one_epoch(
     log_dir: str,
     epoch: int,
     model: DDP,
-    optimizer: torch.optim.Optimizer,
+    optimizer: torch.optim.AdamW,
     tqdm_output: io.TextIOWrapper,
-) -> None:
+    checkpoint_dir: str,
+    run_id: str,
+) -> float:
 
     data_queue: mp.Queue[DataQueueMessage] = mp.Queue(maxsize=10)
     term_queue: mp.Queue[None] = mp.Queue()
@@ -167,6 +220,11 @@ def train_one_epoch(
         avg_loss = epoch_loss / num_batches
         print(f"Epoch {epoch} completed. Average loss: {avg_loss:.4f}")
 
+        # Save checkpoint only on rank 0
+        save_checkpoint(model.module, optimizer, epoch, avg_loss, checkpoint_dir)
+    else:
+        avg_loss = epoch_loss / num_batches
+
     # Synchronize all CUDA operations before cleanup
     torch.cuda.synchronize(rank)
 
@@ -183,13 +241,22 @@ def train_one_epoch(
         batch_producer_proc.terminate()
         batch_producer_proc.join()
 
+    return avg_loss
 
-def train_ddp_worker(rank: int, world_size: int, log_dir: str, epochs: int = 10) -> None:
+
+def train_ddp_worker(
+    rank: int, world_size: int, run_id: str, epochs: int = 10, enable_s3: bool = True
+) -> None:
     """Main training function for each DDP worker process."""
+    # Create log directory using run_id and log_base_path
+    log_dir = os.path.join(log_base_path, run_id)
+
     console_out, console_err = redirect_stdio(
         os.path.join(log_dir, f"trainer_proc_{rank}.log"), also_console=rank == 0
     )
     print(f"Running DDP training on rank {rank} of {world_size}")
+    print(f"Run ID: {run_id}")
+    print(f"Log directory: {log_dir}")
 
     # Setup DDP
     setup_ddp(rank, world_size)
@@ -198,6 +265,10 @@ def train_ddp_worker(rank: int, world_size: int, log_dir: str, epochs: int = 10)
     torch.autograd.profiler.profile(False)  # type: ignore
     torch.autograd.profiler.emit_nvtx(False)  # type: ignore
     torch.set_float32_matmul_precision("high")
+
+    # Setup checkpoint directory
+    checkpoint_dir = "../5_checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     try:
         # Create model
@@ -208,21 +279,53 @@ def train_ddp_worker(rank: int, world_size: int, log_dir: str, epochs: int = 10)
         # Create optimizer
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
-        # Training loop with dummy data
+        # Training loop
         model.train()  # type: ignore
         for epoch in range(epochs):
-            train_one_epoch(rank, world_size, log_dir, epoch, model, optimizer, console_err)
+            train_one_epoch(
+                rank,
+                world_size,
+                log_dir,
+                epoch,
+                model,
+                optimizer,
+                console_err,
+                checkpoint_dir,
+                run_id,
+            )
+
+            # Launch S3 upload on rank 0 after each epoch (if enabled)
+            if rank == 0 and enable_s3:
+                launch_s3_upload_for_epoch(epoch, checkpoint_dir, run_id, log_dir)
 
     finally:
         cleanup_ddp()
 
 
 def launch_ddp_training(
-    world_size: int | None = None, epochs: int = 10, num_batches: int = 100
+    world_size: int | None = None, epochs: int = 10, num_batches: int = 100, enable_s3: bool = True
 ) -> None:
     """Launch DDP training across multiple GPUs."""
 
-    log_dir = f"../logs/ddp_{time.strftime('%Y%m%d_%H%M%S')}"
+    # Generate run ID with timestamp
+    run_id = f"ddp_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    print("Initializing DDP training")
+    print(f"Run ID: {run_id}")
+
+    # Validate S3 configuration early to fail fast if misconfigured
+    if enable_s3:
+        try:
+            s3_config = validate_s3_config()
+            print(f"✓ S3 uploads enabled: s3://{s3_config['bucket_name']}/runs/{run_id}/")
+        except (ValueError, RuntimeError) as e:
+            print("✗ S3 configuration validation failed:")
+            print(f"  {e}")
+            print("Please fix S3 configuration or set enable_s3=False to continue.")
+            raise SystemExit(1)
+    else:
+        print("⚠ S3 uploads disabled")
+
     # Set multiprocessing start method for CUDA tensor sharing
     mp.set_start_method("spawn", force=True)
 
@@ -239,7 +342,7 @@ def launch_ddp_training(
 
     # Spawn training processes
     mp.spawn(  # type: ignore
-        train_ddp_worker, args=(world_size, log_dir, epochs), nprocs=world_size, join=True
+        train_ddp_worker, args=(world_size, run_id, epochs, enable_s3), nprocs=world_size, join=True
     )
 
 
