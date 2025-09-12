@@ -3,25 +3,24 @@ import random
 import struct
 import tempfile
 from multiprocessing import Pool, cpu_count
+from typing import Union
 
 import tokenizers  # type: ignore
 from tabulate import tabulate
 from tqdm import tqdm
 
-import params
-from serialization import (
-    append_to_dataset,
-    combine_datasets,
-    get_number_of_entries,
-    simple_format_read_entry,
-)
+from data import from_uint16_le_bytes
+from indexed_out_of_order import add_entry as add_out_of_order_entry
+from indexed_out_of_order import convert_to_sequential
+from indexed_sequential import append_indexed_entry, read_indexed_entry
+from params import max_parallelism, max_seq_len, vocab_size
 
 
 def create_tokenizer(output_file_path: str, files: list[str]) -> None:
     tokenizer = tokenizers.Tokenizer(tokenizers.models.BPE())
     trainer = tokenizers.trainers.BpeTrainer(
         special_tokens=["[PAD]", "[SOS]", "[EOS]"],
-        vocab_size=params.vocab_size,
+        vocab_size=vocab_size,
         min_frequency=3,
         show_progress=True,
     )
@@ -101,7 +100,7 @@ def process_line_pair(
 
 
 def process_chunk(
-    args: tuple[str, str, str, int, int, bool, str, int],
+    args: tuple[str, str, str, int, int, bool, str, int, str],
 ) -> int:
     (
         tokenizer_json_path,
@@ -112,14 +111,16 @@ def process_chunk(
         show_progress_bar,
         tmp_file_path_prefix,
         corpus_id,
+        tmp_meta_file_path,
     ) = args
     tokenizer = tokenizers.Tokenizer.from_file(tokenizer_json_path)
 
-    # Create temporary files for this chunk
-    temp_data_file = f"{tmp_file_path_prefix}.bin"
-    temp_index_file = f"{tmp_file_path_prefix}.idx"
+    temp_src_bin = f"{tmp_file_path_prefix}.src.bin"
+    temp_src_idx = f"{tmp_file_path_prefix}.src.idx"
+    temp_tgt_bin = f"{tmp_file_path_prefix}.tgt.bin"
+    temp_tgt_idx = f"{tmp_file_path_prefix}.tgt.idx"
+    temp_meta = tmp_meta_file_path
 
-    # Read only the lines we need from the files
     src_lines = []
     with open(src_file_path, "r", encoding="utf-8") as src_file:
         for i, line in enumerate(src_file):
@@ -137,10 +138,12 @@ def process_chunk(
                 tgt_lines.append(line)
 
     chunk = list(zip(src_lines, tgt_lines))
-
-    # Process and write directly to temporary files
     written_entries = 0
-    with open(temp_data_file, "wb") as data_file, open(temp_index_file, "wb") as index_file:
+    src_pos = 0
+    tgt_pos = 0
+    with open(temp_src_bin, "wb") as src_bin, open(temp_src_idx, "wb") as src_idx, open(
+        temp_tgt_bin, "wb"
+    ) as tgt_bin, open(temp_tgt_idx, "wb") as tgt_idx, open(temp_meta, "wb") as meta_file:
         pairs_to_process: list[tuple[str, str]] | tqdm[tuple[str, str]] = chunk
         if show_progress_bar:
             pairs_to_process = tqdm(chunk, desc="Processing chunk")
@@ -151,26 +154,30 @@ def process_chunk(
             if (
                 len(src_tokens) == 0
                 or len(tgt_tokens) == 0
-                or len(src_tokens) > params.max_seq_len
-                or (len(tgt_tokens) + 1) > params.max_seq_len
+                or len(src_tokens) > max_seq_len
+                or (len(tgt_tokens) + 1) > max_seq_len
             ):
                 continue
 
-            # Convert index to line number
             original_line_number = start_line_idx + local_i + 1
 
-            # Append entry to dataset
-            append_to_dataset(
-                data_file,
-                index_file,
-                corpus_id,
-                original_line_number,
-                src_tokens,
-                tgt_tokens,
-            )
+            # Write src tokens
+            src_bin.write(struct.pack(f"<{len(src_tokens)}H", *src_tokens))
+            src_pos += len(src_tokens) * 2
+            src_idx.write(struct.pack("<I", src_pos))
+
+            # Write tgt tokens
+            tgt_bin.write(struct.pack(f"<{len(tgt_tokens)}H", *tgt_tokens))
+            tgt_pos += len(tgt_tokens) * 2
+            tgt_idx.write(struct.pack("<I", tgt_pos))
+
+            # Write metadata: corpus_id (1B), original_line_number (4B)
+            meta_file.write(struct.pack("<BI", corpus_id, original_line_number))
+
             written_entries += 1
 
-        if show_progress_bar and hasattr(pairs_to_process, "close"):
+        # tqdm objects have .close(), lists do not. Only call if it's tqdm
+        if show_progress_bar and isinstance(pairs_to_process, tqdm):
             pairs_to_process.close()
 
     return written_entries
@@ -178,12 +185,12 @@ def process_chunk(
 
 def tokenize_dataset(
     tokenizer_json_path: str,
-    output_file_path: str,
+    output_file_path_prefix: str,
     corpus_id: int,
     src_input_file_path: str,
     tgt_input_file_path: str,
 ) -> None:
-    num_cpus = min(16, cpu_count())
+    num_cpus = min(cpu_count(), max_parallelism)
 
     with open(src_input_file_path, "r", encoding="utf-8") as src_input:
         src_line_count = sum(1 for _ in src_input)
@@ -196,22 +203,20 @@ def tokenize_dataset(
     print(f"Number of lines: {src_line_count}")
     chunk_size = src_line_count // num_cpus
 
-    # Create temporary directory for chunk files
     temp_dir = tempfile.mkdtemp(prefix="tokenize_")
-
-    # Create tasks with file paths and line ranges instead of actual data
     tasks = []
     file_path_prefixes = []
+    meta_file_paths = []
     for i in range(num_cpus):
         start_line_idx = i * chunk_size
-        if i == num_cpus - 1:  # Last chunk gets remaining lines
+        if i == num_cpus - 1:
             end_line_idx = src_line_count
         else:
             end_line_idx = start_line_idx + chunk_size
         tmp_file_path_prefix = os.path.join(temp_dir, f"chunk_{i}")
+        tmp_meta_file_path = os.path.join(temp_dir, f"chunk_{i}.meta")
         file_path_prefixes.append(tmp_file_path_prefix)
-
-        # For simplicity, only show the progress bar for the first chunk
+        meta_file_paths.append(tmp_meta_file_path)
         show_progress_bar = i == 0
         tasks.append(
             (
@@ -223,24 +228,116 @@ def tokenize_dataset(
                 show_progress_bar,
                 tmp_file_path_prefix,
                 corpus_id,
+                tmp_meta_file_path,
             )
         )
 
     with Pool(num_cpus) as pool:
         pool.map(process_chunk, tasks)
-        pool.close()  # Prevent any new tasks from being submitted
-        pool.join()  # Wait for all worker processes to complete
+        pool.close()
+        pool.join()
 
     print("Combining chunks...")
 
-    # Combine temporary files into final output
-    combine_datasets(output_file_path, file_path_prefixes)
+    # Combine src and tgt bin/idx files
+    def combine_bin_idx(bin_or_idx: str, out_prefix: str, chunk_prefixes: list[str]) -> None:
+        out_path = f"{out_prefix}.{bin_or_idx}"
+        with open(out_path, "wb") as out_f:
+            offset = 0
+            for prefix in chunk_prefixes:
+                in_path = f"{prefix}.{bin_or_idx}"
+                with open(in_path, "rb") as in_f:
+                    if bin_or_idx.endswith("bin"):
+                        # Just copy
+                        while True:
+                            chunk = in_f.read(65536)
+                            if not chunk:
+                                break
+                            out_f.write(chunk)
+                    else:
+                        # idx: need to adjust offsets
+                        while True:
+                            entry = in_f.read(4)
+                            if not entry:
+                                break
+                            end_pos = struct.unpack("<I", entry)[0]
+                            out_f.write(struct.pack("<I", end_pos + offset))
+                        # Update offset for next chunk
+                        if bin_or_idx.endswith("bin"):
+                            in_f.seek(0, 2)
+                            offset += in_f.tell()
+                        else:
+                            # For idx, get last end_pos
+                            in_f.seek(-4, 2)
+                            last_end = struct.unpack("<I", in_f.read(4))[0]
+                            offset += last_end
 
-    # Remove temporary directory (force)
+    combine_bin_idx("src.bin", output_file_path_prefix, file_path_prefixes)
+    combine_bin_idx("src.idx", output_file_path_prefix, file_path_prefixes)
+    combine_bin_idx("tgt.bin", output_file_path_prefix, file_path_prefixes)
+    combine_bin_idx("tgt.idx", output_file_path_prefix, file_path_prefixes)
+
+    # Combine meta files
+    out_meta_path = f"{output_file_path_prefix}.meta"
+    with open(out_meta_path, "wb") as out_meta:
+        for meta_path in meta_file_paths:
+            with open(meta_path, "rb") as in_meta:
+                while True:
+                    chunk = in_meta.read(65536)
+                    if not chunk:
+                        break
+                    out_meta.write(chunk)
+
+    # Remove temporary directory and files
     for prefix in file_path_prefixes:
-        os.unlink(prefix + ".bin")
-        os.unlink(prefix + ".idx")
+        for ext in ["src.bin", "src.idx", "tgt.bin", "tgt.idx"]:
+            try:
+                os.unlink(f"{prefix}.{ext}")
+            except Exception:
+                pass
+    for meta_path in meta_file_paths:
+        try:
+            os.unlink(meta_path)
+        except Exception:
+            pass
     os.rmdir(temp_dir)
+
+
+def _detokenize_process_chunk(args: tuple[str, str, str, int, int, str, bool]) -> int:
+    (
+        tokenizer_path,
+        input_data_path,
+        input_index_path,
+        start_idx,
+        end_idx,
+        out_prefix,
+        show_progress,
+    ) = args
+    tokenizer = tokenizers.Tokenizer.from_file(tokenizer_path)
+    out_data_path = f"{out_prefix}.bin"
+    out_index_path = f"{out_prefix}.idx"
+    written = 0
+    with open(input_data_path, "rb") as data_file, open(input_index_path, "rb") as index_file, open(
+        out_data_path, "wb"
+    ) as out_data, open(out_index_path, "wb") as out_index:
+        base_iterator = range(start_idx, end_idx)
+        iterator: Union[range, tqdm[int]] = base_iterator
+        if show_progress:
+            iterator = tqdm(base_iterator, desc=f"Detok chunk {os.path.basename(out_prefix)}")
+        for i in iterator:
+            try:
+                record_bytes = read_indexed_entry(data_file, index_file, i)
+                tokens = from_uint16_le_bytes(record_bytes)
+                text = detokenize_sequence(tokenizer, tokens)
+                if "\n" in text:
+                    raise ValueError("Detokenized text contains a newline character")
+                entry_bytes = struct.pack("<I", i) + text.encode("utf-8")
+            except Exception:
+                # On error, write empty entry with original index
+                entry_bytes = struct.pack("<I", i) + b""
+            append_indexed_entry(out_data, out_index, entry_bytes)
+            written += 1
+    return written
 
 
 def detokenize_dataset(
@@ -249,71 +346,132 @@ def detokenize_dataset(
     output_file_path: str,
 ) -> None:
     """
-    Detokenize a binary dataset to a text file.
+    Parallel detokenization using sequential + out_of_order indices for ordering.
 
-    Args:
-        tokenizer_path: Path to the tokenizer JSON file
-        input_dataset_path: Path to the input dataset (without .bin/.idx suffix)
-        output_file_path: Path to output text file
+    Workers write sequential files with entry payload = ORIGINAL_INDEX(4B) + UTF-8 text.
+    Main merges into an out_of_order index using ORIGINAL_INDEX, then converts to sequential
+    and finally writes the ordered text file.
     """
-    # Load tokenizer
-    print(f"Loading tokenizer from {tokenizer_path}...")
-    tokenizer = tokenizers.Tokenizer.from_file(tokenizer_path)
-
     # Input files
     input_data_path = input_dataset_path + ".bin"
     input_index_path = input_dataset_path + ".idx"
 
-    # Check input files exist
     if not os.path.exists(input_data_path) or not os.path.exists(input_index_path):
         raise FileNotFoundError(
             f"Error: Input dataset files not found: {input_dataset_path}.bin/.idx"
         )
 
-    # Get number of entries
+    # Entry count from sequential format (4 bytes per index entry)
     input_index_size = os.path.getsize(input_index_path)
-    num_entries = input_index_size // 5  # Each index entry is 5 bytes
+    num_entries = input_index_size // 4
 
     print(f"Detokenizing {num_entries:,} entries from {input_dataset_path}")
 
-    # Create output directory if needed
-    output_dir = os.path.dirname(output_file_path)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    # Prepare temp workspace
+    temp_dir = tempfile.mkdtemp(prefix="detok_")
+    try:
+        num_cpus = min(cpu_count(), max_parallelism)
+        chunk_size = max(1, (num_entries + num_cpus - 1) // num_cpus)
+        tasks: list[tuple[str, str, str, int, int, str, bool]] = []
+        prefixes: list[str] = []
+        for i in range(num_cpus):
+            start = i * chunk_size
+            if start >= num_entries:
+                break
+            end = min(start + chunk_size, num_entries)
+            out_prefix = os.path.join(temp_dir, f"chunk_{i}")
+            prefixes.append(out_prefix)
+            show_progress = i == 0
+            tasks.append(
+                (
+                    tokenizer_path,
+                    input_data_path,
+                    input_index_path,
+                    start,
+                    end,
+                    out_prefix,
+                    show_progress,
+                )
+            )
 
-    # Statistics
-    empty_count = 0
+        # Process chunks in parallel
+        if len(tasks) == 1:
+            _detokenize_process_chunk(tasks[0])
+        else:
+            with Pool(len(tasks)) as pool:
+                list(pool.map(_detokenize_process_chunk, tasks))
 
-    with open(input_data_path, "rb") as data_file, open(input_index_path, "rb") as index_file, open(
-        output_file_path, "w", encoding="utf-8"
-    ) as output_file:
+        # Merge into out_of_order dataset using original indices
+        ooo_index_path = os.path.join(temp_dir, "combined.ooo.idx")
+        ooo_data_path = os.path.join(temp_dir, "combined.ooo.bin")
+        with open(ooo_index_path, "wb+") as ooo_idx, open(ooo_data_path, "wb+") as ooo_bin:
+            for prefix in prefixes:
+                seq_idx_path = f"{prefix}.idx"
+                seq_bin_path = f"{prefix}.bin"
+                with open(seq_idx_path, "rb") as sidx, open(seq_bin_path, "rb") as sbin:
+                    sidx.seek(0, 2)
+                    n = sidx.tell() // 4
+                    sidx.seek(0)
+                    for j in range(n):
+                        # Read the record bytes via sequential index
+                        record = read_indexed_entry(sbin, sidx, j)
+                        if len(record) < 4:
+                            continue
+                        orig_idx = struct.unpack("<I", record[:4])[0]
+                        payload = record[4:]
+                        add_out_of_order_entry(ooo_idx, ooo_bin, orig_idx, payload)
 
-        for entry_idx in tqdm(range(num_entries), desc="Detokenizing"):
-            try:
-                # Read tokens from dataset
-                tokens = simple_format_read_entry(data_file, index_file, entry_idx)
+        # Convert to final sequential dataset
+        seq_index_path = os.path.join(temp_dir, "final.idx")
+        seq_data_path = os.path.join(temp_dir, "final.bin")
+        convert_to_sequential(ooo_index_path, ooo_data_path, seq_index_path, seq_data_path)
 
-                # Detokenize to text
-                text = detokenize_sequence(tokenizer, tokens)
-                # Check if text contains a newline
-                if "\n" in text:
-                    raise ValueError("Detokenized text contains a newline character")
+        # Write ordered text output
+        output_dir = os.path.dirname(output_file_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        empty_count = 0
+        with open(seq_data_path, "rb") as sbin, open(seq_index_path, "rb") as sidx, open(
+            output_file_path, "w", encoding="utf-8"
+        ) as out_txt:
+            sidx.seek(0, 2)
+            n = sidx.tell() // 4
+            sidx.seek(0)
+            for i in tqdm(range(n), desc="Writing output"):
+                data = read_indexed_entry(sbin, sidx, i)
+                try:
+                    text = data.decode("utf-8")
+                    if "\n" in text:
+                        raise ValueError("Detokenized text contains a newline character")
+                except Exception:
+                    text = ""
                 if not text.strip():
                     empty_count += 1
+                out_txt.write(text + "\n")
 
-                output_file.write(text + "\n")
-
-            except Exception as e:
-                print(f"Error processing entry {entry_idx}: {e}")
-                # Write empty line to maintain correspondence
-                output_file.write("\n")
-                empty_count += 1
-
-    # Print statistics
-    print("✓ Detokenization complete!")
-    print(f"  Total entries processed: {num_entries:,}")
-    print(f"  Output file: {output_file_path}")
-    print(f"  Empty sequences: {empty_count:,}")
+        print("✓ Detokenization complete!")
+        print(f"  Total entries processed: {num_entries:,}")
+        print(f"  Output file: {output_file_path}")
+        print(f"  Empty sequences: {empty_count:,}")
+    finally:
+        # Cleanup temp files
+        try:
+            for prefix in prefixes if "prefixes" in locals() else []:
+                for ext in (".bin", ".idx"):
+                    p = f"{prefix}{ext}"
+                    if os.path.exists(p):
+                        os.unlink(p)
+            for p in [
+                os.path.join(temp_dir, "combined.ooo.idx"),
+                os.path.join(temp_dir, "combined.ooo.bin"),
+                os.path.join(temp_dir, "final.idx"),
+                os.path.join(temp_dir, "final.bin"),
+            ]:
+                if os.path.exists(p):
+                    os.unlink(p)
+            os.rmdir(temp_dir)
+        except Exception:
+            pass
 
 
 def sample_from_dataset(
@@ -393,3 +551,15 @@ def sample_from_dataset(
             results.append((corpus_id, original_line_number, src_tokens, tgt_tokens))
 
     return results
+
+
+def get_number_of_entries(dataset_file_path: str) -> int:
+    """
+    Return the number of entries in a dataset that uses a 5-byte index entry
+    format: 4-byte start offset (uint32 LE) + 1-byte source-token-count.
+
+    This helper reads the `.idx` file size and divides by 5.
+    """
+    index_file_path = dataset_file_path + ".idx"
+    size = os.path.getsize(index_file_path)
+    return size // 5

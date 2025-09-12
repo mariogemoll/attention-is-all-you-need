@@ -1,6 +1,6 @@
 import sys
 
-from serialization import split_dataset
+from dataset import split_dataset
 
 if __name__ == "__main__":
     if len(sys.argv) != 5:

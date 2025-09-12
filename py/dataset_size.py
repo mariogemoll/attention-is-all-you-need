@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
-
-from serialization import get_number_of_entries
+import os
 
 
 def main() -> None:
@@ -14,8 +13,9 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        num_entries = get_number_of_entries(args.dataset_file_path_prefix)
-        print(num_entries)
+        idx_path = args.dataset_file_path_prefix + ".idx"
+        size = os.path.getsize(idx_path)
+        print(size // 4)
     except FileNotFoundError as e:
         print(f"Error: {e}")
         exit(1)

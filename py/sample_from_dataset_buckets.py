@@ -3,13 +3,8 @@ import sys
 
 import tokenizers  # type: ignore
 
-from data import open_buckets
-from serialization import (
-    get_bucket_sizes,
-    get_entry_idx_from_bucket,
-    get_entry_info_from_index,
-    read_from_data_file,
-)
+from buckets import get_bucket_sizes, get_entry_idx_from_bucket, open_buckets
+from dataset import get_entry
 
 
 def main() -> None:
@@ -23,8 +18,8 @@ def main() -> None:
 
     tokenizer = tokenizers.Tokenizer.from_file(tokenizer_path)
 
-    with open_buckets(dataset_file_path_prefix) as dataset:
-        bucket_sizes = get_bucket_sizes(dataset.bucket_index_file)
+    with open_buckets(dataset_file_path_prefix) as buckets_ds:
+        bucket_sizes = get_bucket_sizes(buckets_ds.bucket_index_file)
 
         num_buckets = len(bucket_sizes)
         if num_buckets == 0:
@@ -44,14 +39,12 @@ def main() -> None:
                 print(f"Bucket {bucket_index} is empty, skipping sample.")
                 continue
 
-            idx = get_entry_idx_from_bucket(dataset.bucket_index_file, bucket_index, idx_in_bucket)
-
-            start_pos, src_len, tg_len = get_entry_info_from_index(
-                dataset.index_file, dataset.data_file_size, idx
+            idx = get_entry_idx_from_bucket(
+                buckets_ds.bucket_index_file, bucket_index, idx_in_bucket
             )
 
-            corpus_id, original_line_number, src_tokens, tgt_tokens = read_from_data_file(
-                dataset.data_file, start_pos, src_len, tg_len
+            corpus_id, original_line_number, src_tokens, tgt_tokens = get_entry(
+                buckets_ds.dataset, idx
             )
 
             print(

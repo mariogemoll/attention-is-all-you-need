@@ -1,6 +1,6 @@
 import sys
 
-from serialization import combine_datasets
+from dataset import concatenate_datasets
 
 
 def main() -> None:
@@ -18,7 +18,7 @@ def main() -> None:
     input_paths = sys.argv[2:]
 
     try:
-        combine_datasets(output_path, input_paths)
+        concatenate_datasets(output_path, input_paths)
     except Exception as e:
         print(f"❌ Error during concatenation: {e}")
         import traceback

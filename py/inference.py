@@ -5,7 +5,9 @@ import torch
 from tqdm import tqdm
 
 from batching import BucketEntries
-from data import open_buckets
+from buckets import open_buckets
+from data import to_uint16_le_bytes
+from indexed_sequential import append_indexed_entry
 from model import Transformer
 from params import eos, pad, sos, target_num_tokens_per_batch
 
@@ -72,24 +74,9 @@ def add_spillover_sequences(
             spillover_sequences.pop(line_number, None)
 
 
-def store_output(
-    output_index_file: BinaryIO, output_data_file: BinaryIO, entry_idx: int, data: list[int]
-) -> None:
-    if len(data) == 0:
-        pos = 0
-    else:
-        # Get the current position in the data file
-        pos = output_data_file.tell()
-        # Convert the data to 16bit little-endian and write to the data file
-        output_data_file.write(torch.tensor(data, dtype=torch.int16).numpy().tobytes())
-
-    # The index stores 5 bytes for any entry: a 32bit offset and a 8bit length
-    idx_file_pos = entry_idx * 5
-    output_index_file.seek(idx_file_pos)
-    # Write the starting position as a little-endian 32bit integer
-    output_index_file.write(pos.to_bytes(4, byteorder="little"))
-    # Write the length of the data as a single byte
-    output_index_file.write(len(data).to_bytes(1, byteorder="little"))
+def store_output(output_index_file: BinaryIO, output_data_file: BinaryIO, data: list[int]) -> None:
+    entry_bytes = to_uint16_le_bytes(data)
+    append_indexed_entry(output_data_file, output_index_file, entry_bytes)
 
 
 def translate_dataset(
@@ -99,12 +86,9 @@ def translate_dataset(
 
     sequences: Dict[int, SequenceInfo] = {}
     spillover_sequences: Dict[int, SequenceInfo] = {}
+    completed_sequences: Dict[int, list[int]] = {}  # Map from line_number to translated tokens
 
-    with open_buckets(input_path_prefix) as dataset, open(
-        output_path_prefix + ".bin", "wb"
-    ) as output_data_file, open(
-        output_path_prefix + ".idx", "wb"
-    ) as output_index_file, torch.no_grad():
+    with open_buckets(input_path_prefix) as dataset, torch.no_grad():
         for bucket_idx in range(dataset.num_buckets):
             bucket_entries = BucketEntries(dataset, bucket_id=bucket_idx)
             seq_len = (bucket_idx + 1) * dataset.step_size
@@ -155,7 +139,7 @@ def translate_dataset(
                     for line_number, info in zero_length_seqs:
                         # Handle zero length sequences (e.g., by removing them)
                         batch.pop(line_number, None)
-                        store_output(output_index_file, output_data_file, line_number - 1, [])
+                        completed_sequences[line_number] = []
                     print(f"processed {len(zero_length_seqs)} zero length sequences")
                     continue
 
@@ -196,9 +180,7 @@ def translate_dataset(
                         # If the sequence ends with eos, it's completely translated. Store the
                         # result and remove the sequence from sequences
                         final_sequence = info.tgt_tokens[1:]  # Remove SOS token
-                        store_output(
-                            output_index_file, output_data_file, line_number - 1, final_sequence
-                        )
+                        completed_sequences[line_number] = final_sequence
                         sequences.pop(line_number, None)
                         num_sequences_completed += 1
                         pbar.update(1)
@@ -220,4 +202,19 @@ def translate_dataset(
         # We're done with all the buckets. If we still have spillover sequences, store the tokens we
         # have generated for those
         for line_number, info in spillover_sequences.items():
-            store_output(output_index_file, output_data_file, line_number - 1, info.tgt_tokens[1:])
+            completed_sequences[line_number] = info.tgt_tokens[1:]
+
+    # Write all completed sequences to files in order
+    with open(output_path_prefix + ".bin", "wb") as output_data_file, open(
+        output_path_prefix + ".idx", "wb"
+    ) as output_index_file:
+        # Get the maximum line number to determine the total number of sequences
+        if completed_sequences:
+            max_line_number = max(completed_sequences.keys())
+            for line_number in range(1, max_line_number + 1):  # line_number starts from 1
+                if line_number in completed_sequences:
+                    tokens = completed_sequences[line_number]
+                else:
+                    # Handle missing sequences (should not happen in normal cases)
+                    tokens = []
+                store_output(output_index_file, output_data_file, tokens)

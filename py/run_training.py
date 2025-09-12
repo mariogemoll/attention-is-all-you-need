@@ -2,7 +2,7 @@ import torch
 import torch.multiprocessing as mp
 
 from batch_producer import DataQueueMessage, batch_producer
-from data import open_buckets
+from buckets import open_buckets
 from params import target_num_tokens_per_batch
 from training import clean_up_old_checkpoints, evaluate, init, save_checkpoint, train_one_epoch
 

@@ -12,9 +12,10 @@ from tqdm import tqdm
 
 from batch_producer import DataQueueMessage
 from batching import EpochBatches
-from data import BucketedDataset, get_tensors
+from buckets import BucketedDataset
 from model import Transformer
 from params import pad, target_num_tokens_per_batch
+from tensors import get_tensors
 
 
 def save_checkpoint(
@@ -267,9 +268,7 @@ def evaluate(
         pbar = tqdm(val_batches, desc=f"Evaluating Epoch {epoch}")
         for i, (batch_id, entry_ids) in enumerate(pbar):
             seq_len = (batch_id + 1) * valset.step_size
-            enc_input, dec_input, dec_target = get_tensors(
-                valset.index_file, valset.data_file, valset.data_file_size, seq_len, entry_ids
-            )
+            enc_input, dec_input, dec_target = get_tensors(seq_len, valset.dataset, entry_ids)
             enc_input = enc_input.to(device)
             dec_input = dec_input.to(device)
             dec_target = dec_target.to(device)

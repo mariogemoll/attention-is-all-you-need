@@ -1,12 +1,16 @@
 import io
 import os
 import time
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
+
+if TYPE_CHECKING:
+    from multiprocessing import Queue
 
 from batch_producer import DataQueueMessage, batch_producer
 from model import Transformer
@@ -45,7 +49,13 @@ def setup_ddp(rank: int, world_size: int, backend: str = "nccl") -> None:
     torch.cuda.set_device(rank)
 
 
-def launch_s3_upload_for_epoch(epoch: int, checkpoint_dir: str, run_id: str, log_dir: str) -> None:
+def launch_s3_upload_for_epoch(
+    epoch: int,
+    checkpoint_dir: str,
+    run_id: str,
+    log_dir: str,
+    s3_upload_processes: list[mp.Process],
+) -> None:
     """Launch S3 upload for checkpoint files of a specific epoch."""
     try:
         # Get S3 configuration from environment variables
@@ -82,6 +92,9 @@ def launch_s3_upload_for_epoch(epoch: int, checkpoint_dir: str, run_id: str, log
         )
 
         print(f"S3 upload process started for epoch {epoch} (PID: {upload_process.pid})")
+
+        # Add to tracking list
+        s3_upload_processes.append(upload_process)
 
     except Exception as e:
         print(f"Failed to launch S3 upload for epoch {epoch}: {e}")
@@ -133,6 +146,45 @@ def fd_to_textio(fd: int) -> io.TextIOWrapper:
     )
 
 
+def batch_producer_with_logging(
+    target_num_tokens_per_batch: int,
+    dataset_base_path: str,
+    num_procs: int,
+    proc_id: int,
+    device_id: str,
+    data_queue: "Queue[DataQueueMessage]",
+    term_queue: "Queue[None]",
+    rng_seed: int,
+    log_dir: str,
+    epoch: int,
+) -> None:
+    """Wrapper around batch_producer that handles logging and exceptions."""
+    # Setup logging for this process
+    console_out, console_err = redirect_stdio(
+        os.path.join(log_dir, f"batch_producer_proc_{proc_id}_epoch_{epoch}.log"),
+        also_console=False,
+    )
+
+    try:
+        batch_producer(
+            target_num_tokens_per_batch=target_num_tokens_per_batch,
+            dataset_base_path=dataset_base_path,
+            num_procs=num_procs,
+            proc_id=proc_id,
+            device_id=device_id,
+            data_queue=data_queue,
+            term_queue=term_queue,
+            rng_seed=rng_seed,
+        )
+    except Exception as e:
+        print(f"Batch producer process {proc_id} failed for epoch {epoch}: {e}")
+        raise
+    finally:
+        # Cleanup any CUDA resources if on GPU
+        if "cuda" in device_id:
+            torch.cuda.empty_cache()
+
+
 def train_one_epoch(
     rank: int,
     world_size: int,
@@ -151,7 +203,7 @@ def train_one_epoch(
 
     # Start batch_producer as separate process
     batch_producer_proc = mp.Process(
-        target=batch_producer,
+        target=batch_producer_with_logging,
         args=(
             target_num_tokens_per_batch,
             "../4_tokens/train",
@@ -244,7 +296,13 @@ def train_one_epoch(
     return avg_loss
 
 
-def train_ddp_worker(rank: int, world_size: int, run_id: str, enable_s3: bool = True) -> None:
+def train_ddp_worker(
+    rank: int,
+    world_size: int,
+    run_id: str,
+    s3_upload_processes: list[mp.Process],
+    enable_s3: bool = True,
+) -> None:
     """Main training function for each DDP worker process."""
     # Create log directory using run_id and log_base_path
     log_dir = os.path.join(log_base_path, run_id)
@@ -294,7 +352,9 @@ def train_ddp_worker(rank: int, world_size: int, run_id: str, enable_s3: bool = 
 
             # Launch S3 upload on rank 0 after each epoch (if enabled)
             if rank == 0 and enable_s3:
-                launch_s3_upload_for_epoch(epoch, checkpoint_dir, run_id, log_dir)
+                launch_s3_upload_for_epoch(
+                    epoch, checkpoint_dir, run_id, log_dir, s3_upload_processes
+                )
 
     finally:
         cleanup_ddp()
@@ -336,10 +396,24 @@ def launch_ddp_training(world_size: int | None = None, enable_s3: bool = True) -
 
     print(f"Launching DDP training with {world_size} processes")
 
+    # Create list to track S3 upload processes
+    s3_upload_processes: list[mp.Process] = []
+
     # Spawn training processes
     mp.spawn(  # type: ignore
-        train_ddp_worker, args=(world_size, run_id, enable_s3), nprocs=world_size, join=True
+        train_ddp_worker,
+        args=(world_size, run_id, s3_upload_processes, enable_s3),
+        nprocs=world_size,
+        join=True,
     )
+
+    # Wait for all S3 upload processes to complete
+    if enable_s3 and s3_upload_processes:
+        print(f"Waiting for {len(s3_upload_processes)} S3 upload processes to complete...")
+        for process in s3_upload_processes:
+            if process.is_alive():
+                process.join()
+        print("All S3 uploads completed.")
 
 
 # Example usage

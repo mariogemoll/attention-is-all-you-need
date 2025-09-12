@@ -8,6 +8,8 @@ from collections import Counter
 
 from tqdm import tqdm, trange
 
+from params import max_parallelism
+
 standard_alphabet = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 interpunctuation = set(".,:;!?\"'()-/")
@@ -206,6 +208,5 @@ if __name__ == "__main__":
         print(f"Usage: python {sys.argv[0]} <src_input> <tgt_input> <src_output> <tgt_output>")
         sys.exit(1)
 
-    num_processes = multiprocessing.cpu_count()
-    # num_processes = 1
+    num_processes = min(multiprocessing.cpu_count(), max_parallelism)
     clean(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], num_processes)

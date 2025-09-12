@@ -1,7 +1,8 @@
+import os
 import sys
 
-from params import max_seq_len
-from serialization import create_bucket_index
+from buckets import create_bucket_index
+from params import max_parallelism, max_seq_len
 
 
 def main() -> None:
@@ -12,7 +13,10 @@ def main() -> None:
     dataset_path_prefix = sys.argv[1]
 
     try:
-        create_bucket_index(dataset_path_prefix, step_size=16, max_length=max_seq_len)
+        num_procs = min(os.cpu_count() or 1, max_parallelism)
+        create_bucket_index(
+            dataset_path_prefix, step_size=16, max_length=max_seq_len, num_processes=num_procs
+        )
     except Exception as e:
         print(f"❌ Error during index creation: {e}")
         import traceback

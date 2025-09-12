@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import argparse
+import os
+import random
 import sys
 
 import tokenizers  # type: ignore
 from tabulate import tabulate
 
-from tokenization import decode, sample_from_dataset
+from dataset import get_entry, open_dataset
+from tokenization import decode
 
 
 def display_sample(
@@ -35,12 +38,32 @@ def display_sample(
     print("=" * 80)
 
 
+def sample_from_dataset(
+    dataset_prefix: str, num_samples: int
+) -> list[tuple[int, int, list[int], list[int]]]:
+    src_idx = dataset_prefix + ".src.idx"
+    num_entries = os.path.getsize(src_idx) // 4
+    if num_samples > num_entries:
+        print(f"Requested {num_samples} samples, but dataset only has {num_entries} entries")
+        num_samples = num_entries
+
+    sampled_indices = random.sample(range(num_entries), num_samples)
+    sampled_indices.sort()
+
+    results = []
+    with open_dataset(dataset_prefix) as ds:
+        for entry_idx in sampled_indices:
+            corpus_id, original_line_number, src_tokens, tgt_tokens = get_entry(ds, entry_idx)
+            results.append((corpus_id, original_line_number, src_tokens, tgt_tokens))
+    return results
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sample entries from a binary dataset and display them"
+        description="Sample entries from a binary dataset and display them (new format)"
     )
     parser.add_argument("tokenizer_path", help="Path to the tokenizer JSON file")
-    parser.add_argument("dataset_path", help="Path to the dataset file (without suffix)")
+    parser.add_argument("dataset_prefix", help="Path prefix to the dataset (no .src.bin etc)")
     parser.add_argument("num_samples", type=int, help="Number of samples to display")
 
     args = parser.parse_args()
@@ -54,7 +77,7 @@ def main() -> None:
 
     # Sample from dataset
     try:
-        samples = sample_from_dataset(args.dataset_path, args.num_samples)
+        samples = sample_from_dataset(args.dataset_prefix, args.num_samples)
     except Exception as e:
         print(f"Error sampling dataset: {e}")
         sys.exit(1)

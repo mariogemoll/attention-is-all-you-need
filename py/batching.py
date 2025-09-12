@@ -1,24 +1,31 @@
 import random
 from typing import BinaryIO, Generator, TypeVar
 
-from data import BucketedDataset
-from serialization import (
+from buckets import (
+    BucketedDataset,
     get_bucket_sizes,
-    get_entries,
     get_entry_idx_from_bucket,
     read_bucket_index_header,
 )
+from dataset import get_entry
 
 T = TypeVar("T")
 
 
 def get_subseq(rng: random.Random, num_procs: int, proc_id: int, entries: list[T]) -> list[T]:
-    # Validate that we have enough entries to distribute among all processors
+    # Handle empty buckets gracefully
+    if len(entries) == 0:
+        return []
+
+    if num_procs == 1:
+        assert proc_id == 0, "proc_id must be 0 if num_procs is 1"
+        return entries.copy()
+
     if len(entries) < num_procs:
         raise ValueError(
-            f"Cannot distribute {len(entries)} entries among {num_procs} processors. "
-            f"Each processor must get at least one entry."
+            f"Number of entries ({len(entries)}) is less than number of processors ({num_procs})"
         )
+
     entries = entries.copy()
     rng.shuffle(entries)
 
@@ -31,8 +38,11 @@ def get_subseq(rng: random.Random, num_procs: int, proc_id: int, entries: list[T
 
 
 def get_batches(batch_size: int, full_batches_only: bool, entries: list[T]) -> list[list[T]]:
+    if len(entries) == 0:
+        return []
+
     batches_list = [entries[i : i + batch_size] for i in range(0, len(entries), batch_size)]
-    if full_batches_only and len(batches_list[-1]) != batch_size:
+    if full_batches_only and len(batches_list) > 0 and len(batches_list[-1]) != batch_size:
         return batches_list[:-1]
     else:
         return batches_list
@@ -99,7 +109,7 @@ class EpochBatches:
         self.bucket_index_file = bucket_index_file
 
         header = read_bucket_index_header(self.bucket_index_file)
-        step_size, num_buckets, bucket_offsets = header
+        step_size, num_buckets, _ = header
         bucket_sizes = get_bucket_sizes(self.bucket_index_file)
 
         # Calculate batch sizes for the buckets
@@ -108,8 +118,8 @@ class EpochBatches:
             max(1, target_num_tokens_per_batch // (step_size * (i + 1)))
             for i in range(len(buckets))
         ]
-        # Round down to nearest multiple of 16
-        batch_sizes = [size - (size % 16) for size in batch_sizes]
+        # Round down to nearest multiple of 16, but ensure minimum of 1
+        batch_sizes = [max(1, size - (size % 16)) for size in batch_sizes]
 
         rng = random.Random(rng_seed)
         self.batches = get_proc_batches(
@@ -168,11 +178,7 @@ class BucketEntries:
             entry_idx = get_entry_idx_from_bucket(
                 self.dataset.bucket_index_file, self.bucket_id, idx_in_bucket
             )
-            entries = get_entries(
-                self.dataset.index_file,
-                self.dataset.data_file,
-                self.dataset.data_file_size,
-                [entry_idx],
+            corpus_id, original_line_number, src_tokens, tgt_tokens = get_entry(
+                self.dataset.dataset, entry_idx
             )
-            _, original_line_number, src_tokens, _ = entries[0]
             yield (original_line_number, src_tokens)

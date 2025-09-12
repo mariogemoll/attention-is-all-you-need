@@ -3,8 +3,8 @@ import sys
 from tqdm import tqdm
 
 from batching import EpochBatches
-from data import open_buckets
-from serialization import get_entry, read_bucket_index_header
+from buckets import open_buckets, read_bucket_index_header
+from dataset import get_entry
 
 
 def main() -> None:
@@ -19,12 +19,12 @@ def main() -> None:
 
     target_num_tokens_per_batch = 32768
 
-    with open_buckets(file_path_prefix) as dataset:
-        step_size, _, _ = read_bucket_index_header(dataset.bucket_index_file)
+    with open_buckets(file_path_prefix) as buckets_ds:
+        step_size, _, _ = read_bucket_index_header(buckets_ds.bucket_index_file)
         batches = EpochBatches(
             num_procs=1,
             proc_id=0,
-            bucket_index_file=dataset.bucket_index_file,
+            bucket_index_file=buckets_ds.bucket_index_file,
             target_num_tokens_per_batch=target_num_tokens_per_batch,
             rng_seed=None,
             full_batches_only=True,
@@ -40,9 +40,7 @@ def main() -> None:
             for actual_entry_idx in batch_indices:
 
                 batch_counter += 1
-                _, _, src_tokens, tgt_tokens = get_entry(
-                    dataset.index_file, dataset.data_file, dataset.data_file_size, actual_entry_idx
-                )
+                _, _, src_tokens, tgt_tokens = get_entry(buckets_ds.dataset, actual_entry_idx)
                 pair_counter += 1
 
                 src_len = len(src_tokens)
