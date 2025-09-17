@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Any, Dict, cast
+from typing import Any, Dict
 
 import torch
 import torch.multiprocessing as mp
@@ -53,9 +53,7 @@ def save_checkpoint(
 
     # Save checkpoint metadata (without model weights)
     if scheduler is not None:
-        scheduler_state_dict = cast(
-            Dict[str, Any], scheduler.state_dict()  # type: ignore[no-untyped-call]
-        )
+        scheduler_state_dict = scheduler.state_dict()
     else:
         scheduler_state_dict = None
 
@@ -100,9 +98,7 @@ def load_checkpoint(
     # Restore scheduler state if provided
     scheduler_state = checkpoint.get("scheduler_state_dict")
     if scheduler is not None and scheduler_state is not None:
-        scheduler.load_state_dict(
-            cast(Dict[str, Any], scheduler_state)  # type: ignore[no-untyped-call]
-        )
+        scheduler.load_state_dict(scheduler_state)
     elif scheduler is not None and scheduler_state is None:
         print(
             "Warning: Scheduler provided but checkpoint lacks scheduler state."

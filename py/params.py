@@ -20,3 +20,10 @@ log_base_path = "../logs"
 max_parallelism = 16
 
 checkpoints_to_keep = 10
+
+train_dataset_path = "../4_tokens/train"
+
+# Values from the "Attention Is All You Need" paper
+aiayn_tokens_per_step = 25_000
+aiayn_warmup_steps = 4_000
+target_num_processed_tokens = 100000 * aiayn_tokens_per_step

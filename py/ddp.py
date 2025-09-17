@@ -1,4 +1,5 @@
 import io
+import math
 import os
 import time
 from typing import TYPE_CHECKING
@@ -14,14 +15,19 @@ if TYPE_CHECKING:
     from multiprocessing import Queue
 
 from batch_producer import DataQueueMessage, batch_producer
+from batching import EpochBatches
+from buckets import open_buckets
 from lr_schedules import cosine_lr
 from model import Transformer
 from params import (
+    aiayn_tokens_per_step,
+    aiayn_warmup_steps,
     checkpoints_to_keep,
     log_base_path,
-    num_epochs,
     pad,
+    target_num_processed_tokens,
     target_num_tokens_per_batch,
+    train_dataset_path,
 )
 from per_process_logs import redirect_stdio
 from s3_upload import (
@@ -221,7 +227,7 @@ def train_one_epoch(
         target=batch_producer_with_logging,
         args=(
             target_num_tokens_per_batch,
-            "../4_tokens/mini",
+            train_dataset_path,
             world_size,
             rank,
             "cuda:" + str(rank),
@@ -384,10 +390,74 @@ def train_ddp_worker(
 
         model.compile(dynamic=True)  # type: ignore
 
-        # Create optimizer
-        optimizer = torch.optim.AdamW(model.parameters(), lr=7e-4)
-        schedule_fn = cosine_lr(100000, 10000)
+        training_config: list[float] = [0.0] * 6
+        if rank == 0:
+            with open_buckets(train_dataset_path) as train_buckets:
+                epoch_batches_preview = EpochBatches(
+                    num_procs=world_size,
+                    proc_id=0,
+                    bucket_index_file=train_buckets.bucket_index_file,
+                    target_num_tokens_per_batch=target_num_tokens_per_batch,
+                    rng_seed=42,
+                    full_batches_only=True,
+                )
+                batches_per_epoch = len(epoch_batches_preview)
+
+            if batches_per_epoch <= 0:
+                raise RuntimeError(
+                    "No batches available for training; check dataset configuration."
+                )
+
+            tokens_per_step = target_num_tokens_per_batch * world_size
+            if tokens_per_step <= 0:
+                raise RuntimeError("Tokens per step must be positive. Check configuration.")
+
+            target_steps = max(1, math.ceil(target_num_processed_tokens / tokens_per_step))
+            epochs_total = max(1, math.ceil(target_steps / batches_per_epoch))
+
+            warmup_steps_target = math.ceil(
+                (aiayn_tokens_per_step * aiayn_warmup_steps) / tokens_per_step
+            )
+            warmup_steps = max(1, min(target_steps, warmup_steps_target))
+            warmup_epochs = min(epochs_total, max(1, math.ceil(warmup_steps / batches_per_epoch)))
+
+            total_steps = epochs_total * batches_per_epoch
+            training_config = [
+                float(batches_per_epoch),
+                float(epochs_total),
+                float(warmup_steps),
+                float(total_steps),
+                float(target_steps),
+                float(warmup_epochs),
+            ]
+
+            print(
+                "Training schedule:",
+                f"batches/epoch={batches_per_epoch}",
+                f"tokens/step={tokens_per_step}",
+                f"target_tokens={target_num_processed_tokens}",
+                f"target_steps={target_steps}",
+                f"epochs={epochs_total}",
+                f"total_steps={total_steps}",
+                f"warmup_steps={warmup_steps}",
+                f"warmup_epochs≈{warmup_epochs}",
+            )
+
+        dist.broadcast_object_list(training_config, src=0)
+        batches_per_epoch, epochs_total, warmup_steps, total_steps, target_steps, warmup_epochs = [
+            int(x) for x in training_config
+        ]
+
+        if batches_per_epoch <= 0 or total_steps <= 0:
+            raise RuntimeError("Invalid training schedule received from rank 0.")
+
+        base_lr = (target_num_tokens_per_batch / float(aiayn_tokens_per_step)) * 7e-4 * world_size
+        optimizer = torch.optim.AdamW(model.parameters(), lr=base_lr)
+        schedule_fn = cosine_lr(total_steps, warmup_steps)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=schedule_fn)
+        if rank == 0:
+            print(f"Base learning rate set to {base_lr:.6f}")
+            print(f"Warmup epochs: {warmup_epochs} (warmup steps: {warmup_steps})")
 
         start_epoch = 1
         if resume_from_checkpoint:
@@ -423,14 +493,14 @@ def train_ddp_worker(
         dist.broadcast_object_list(start_epoch_list, src=0)
         start_epoch = int(start_epoch_list[0])
 
-        if start_epoch > num_epochs:
+        if start_epoch > epochs_total:
             if rank == 0:
-                print(f"All {num_epochs} epochs already completed according to checkpoints.")
+                print(f"All {epochs_total} epochs already completed according to checkpoints.")
             return
 
         # Training loop
         model.train()  # type: ignore
-        for epoch in range(start_epoch, num_epochs + 1):
+        for epoch in range(start_epoch, epochs_total + 1):
             train_one_epoch(
                 rank,
                 world_size,
