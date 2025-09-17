@@ -18,3 +18,5 @@ target_num_tokens_per_batch = 20000
 log_base_path = "../logs"
 
 max_parallelism = 16
+
+checkpoints_to_keep = 10

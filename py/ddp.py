@@ -15,7 +15,13 @@ if TYPE_CHECKING:
 
 from batch_producer import DataQueueMessage, batch_producer
 from model import Transformer
-from params import log_base_path, num_epochs, pad, target_num_tokens_per_batch
+from params import (
+    checkpoints_to_keep,
+    log_base_path,
+    num_epochs,
+    pad,
+    target_num_tokens_per_batch,
+)
 from per_process_logs import redirect_stdio
 from s3_upload import (
     create_s3_prefix_from_run_id,
@@ -24,7 +30,12 @@ from s3_upload import (
     launch_s3_upload_background,
     validate_s3_config,
 )
-from training import find_latest_checkpoint, load_checkpoint, save_checkpoint
+from training import (
+    clean_up_old_checkpoints,
+    find_latest_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+)
 
 
 class DummyProgressBar:
@@ -350,6 +361,7 @@ def train_ddp_worker(
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     s3_upload_processes: list[tuple[mp.Process, str]] = []
+    cleanup_processes: list[tuple[mp.Process, str]] = []
 
     try:
         # Create model
@@ -416,21 +428,38 @@ def train_ddp_worker(
                     epoch, checkpoint_dir, run_id, log_dir, s3_upload_processes
                 )
 
-    finally:
-        if rank == 0 and enable_s3 and s3_upload_processes:
-            alive_processes = [item for item in s3_upload_processes if item[0].is_alive()]
-            if alive_processes:
-                print(
-                    f"Rank 0 waiting for {len(alive_processes)} S3 upload process(es) to complete..."
+            if rank == 0:
+                cleanup_process = mp.Process(
+                    target=clean_up_old_checkpoints,
+                    args=(checkpoint_dir, checkpoints_to_keep),
                 )
-                for process, description in alive_processes:
-                    print(f"  PID {process.pid}: {description}")
-                    process.join()
-            for process, _ in s3_upload_processes:
-                if process.is_alive():
-                    process.join()
-            if alive_processes:
-                print("Rank 0: All pending S3 uploads completed.")
+                cleanup_process.start()
+                cleanup_processes.append((cleanup_process, f"cleanup after epoch {epoch}"))
+
+    finally:
+        if rank == 0:
+            def _wait_for_processes(
+                label: str, processes: list[tuple[mp.Process, str]]
+            ) -> None:
+                if not processes:
+                    return
+                alive = [item for item in processes if item[0].is_alive()]
+                if alive:
+                    print(
+                        f"Rank 0 waiting for {len(alive)} {label} process(es) to complete..."
+                    )
+                    for process, description in alive:
+                        print(f"  PID {process.pid}: {description}")
+                        process.join()
+                for process, _ in processes:
+                    if process.is_alive():
+                        process.join()
+                if alive:
+                    print(f"Rank 0: {label} completed.")
+
+            if enable_s3:
+                _wait_for_processes("S3 upload", s3_upload_processes)
+            _wait_for_processes("checkpoint cleanup", cleanup_processes)
 
         if writer is not None:
             writer.close()  # type: ignore[no-untyped-call]
@@ -489,4 +518,4 @@ def launch_ddp_training(
 # Example usage
 if __name__ == "__main__":
     # Launch DDP training with dummy data
-    launch_ddp_training(world_size=2)
+    launch_ddp_training(world_size=2, enable_s3=False)
