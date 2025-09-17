@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from multiprocessing import Queue
 
 from batch_producer import DataQueueMessage, batch_producer
+from lr_schedules import cosine_lr
 from model import Transformer
 from params import (
     checkpoints_to_keep,
@@ -208,6 +209,7 @@ def train_one_epoch(
     checkpoint_dir: str,
     run_id: str,
     writer: SummaryWriter | None,
+    scheduler: torch.optim.lr_scheduler.LambdaLR | None,
 ) -> float:
 
     data_queue: mp.Queue[DataQueueMessage] = mp.Queue(maxsize=10)
@@ -269,6 +271,8 @@ def train_one_epoch(
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
         current_loss = loss.item()
         epoch_loss += current_loss
@@ -282,6 +286,7 @@ def train_one_epoch(
             )
             if writer is not None:
                 global_step = (epoch - 1) * num_batches + batch_idx + 1
+                current_lr = optimizer.param_groups[0]["lr"]
                 writer.add_scalar(  # type: ignore[no-untyped-call]
                     "time/tensor_aquisition", tensor_acquisition, global_step
                 )
@@ -290,6 +295,9 @@ def train_one_epoch(
                 )
                 writer.add_scalar(  # type: ignore[no-untyped-call]
                     "loss/batch/train", current_loss, global_step
+                )
+                writer.add_scalar(  # type: ignore[no-untyped-call]
+                    "lr/batch", current_lr, global_step
                 )
             pbar.update(1)
             pbar.set_postfix({"time": time_info_str, "loss": f"{current_loss:.2f} "})
@@ -303,7 +311,14 @@ def train_one_epoch(
             writer.flush()  # type: ignore[no-untyped-call]
 
         # Save checkpoint only on rank 0
-        save_checkpoint(model.module, optimizer, epoch, avg_loss, checkpoint_dir)
+        save_checkpoint(
+            model.module,
+            optimizer,
+            epoch,
+            avg_loss,
+            checkpoint_dir,
+            scheduler=scheduler,
+        )
 
     # Synchronize all CUDA operations before cleanup
     torch.cuda.synchronize(rank)
@@ -370,7 +385,9 @@ def train_ddp_worker(
         model.compile(dynamic=True)  # type: ignore
 
         # Create optimizer
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=7e-4)
+        schedule_fn = cosine_lr(100000, 10000)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=schedule_fn)
 
         start_epoch = 1
         if resume_from_checkpoint:
@@ -388,7 +405,12 @@ def train_ddp_worker(
 
             if latest_checkpoint:
                 try:
-                    last_epoch, _ = load_checkpoint(model.module, optimizer, latest_checkpoint)
+                    last_epoch, _ = load_checkpoint(
+                        model.module,
+                        optimizer,
+                        latest_checkpoint,
+                        scheduler=scheduler,
+                    )
                     start_epoch = last_epoch + 1
                     print(f"Rank {rank}: Resuming from epoch {start_epoch}")
                 except Exception as e:
@@ -420,6 +442,7 @@ def train_ddp_worker(
                 checkpoint_dir,
                 run_id,
                 writer,
+                scheduler,
             )
 
             # Launch S3 upload on rank 0 after each epoch (if enabled)
@@ -438,16 +461,13 @@ def train_ddp_worker(
 
     finally:
         if rank == 0:
-            def _wait_for_processes(
-                label: str, processes: list[tuple[mp.Process, str]]
-            ) -> None:
+
+            def _wait_for_processes(label: str, processes: list[tuple[mp.Process, str]]) -> None:
                 if not processes:
                     return
                 alive = [item for item in processes if item[0].is_alive()]
                 if alive:
-                    print(
-                        f"Rank 0 waiting for {len(alive)} {label} process(es) to complete..."
-                    )
+                    print(f"Rank 0 waiting for {len(alive)} {label} process(es) to complete...")
                     for process, description in alive:
                         print(f"  PID {process.pid}: {description}")
                         process.join()

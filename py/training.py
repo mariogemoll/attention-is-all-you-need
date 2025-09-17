@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from typing import Any, Dict, cast
 
 import torch
 import torch.multiprocessing as mp
@@ -11,12 +12,26 @@ from torch.optim import AdamW
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+import params as training_params
 from batch_producer import DataQueueMessage
 from batching import EpochBatches
 from buckets import BucketedDataset
 from model import Transformer
 from params import pad, target_num_tokens_per_batch
 from tensors import get_tensors
+
+CHECKPOINT_PARAM_TYPES = (int, float, str, bool)
+
+
+def _collect_params_snapshot() -> dict[str, int | float | str | bool]:
+    snapshot: dict[str, int | float | str | bool] = {}
+    for name in dir(training_params):
+        if name.startswith("_"):
+            continue
+        value = getattr(training_params, name)
+        if isinstance(value, CHECKPOINT_PARAM_TYPES):
+            snapshot[name] = value
+    return snapshot
 
 
 def save_checkpoint(
@@ -25,6 +40,7 @@ def save_checkpoint(
     epoch: int,
     loss: float,
     checkpoint_dir: str,
+    scheduler: torch.optim.lr_scheduler.LambdaLR | None = None,
 ) -> None:
     """Save training checkpoint with model weights and metadata in separate files."""
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -36,13 +52,22 @@ def save_checkpoint(
     torch.save(model.state_dict(), model_weights_path)
 
     # Save checkpoint metadata (without model weights)
-    checkpoint_metadata = {
+    if scheduler is not None:
+        scheduler_state_dict = cast(
+            Dict[str, Any], scheduler.state_dict()  # type: ignore[no-untyped-call]
+        )
+    else:
+        scheduler_state_dict = None
+
+    checkpoint_metadata: Dict[str, Any] = {
         "epoch": epoch,
         "model_weights_file": model_weights_file,
         "optimizer_state_dict": optimizer.state_dict(),
         "loss": loss,
         "rng_state": torch.get_rng_state(),
         "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        "scheduler_state_dict": scheduler_state_dict,
+        "params_snapshot": _collect_params_snapshot(),
     }
     checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{epoch_str}.pt")
     torch.save(checkpoint_metadata, checkpoint_path)
@@ -52,7 +77,11 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-    model: Transformer, optimizer: AdamW, checkpoint_path: str
+    model: Transformer,
+    optimizer: AdamW,
+    checkpoint_path: str,
+    scheduler: torch.optim.lr_scheduler.LambdaLR | None = None,
+    strict_params: bool = True,
 ) -> tuple[int, float]:
     """Load training checkpoint and restore model, optimizer state, and RNG state."""
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -68,10 +97,44 @@ def load_checkpoint(
     # Load optimizer state
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+    # Restore scheduler state if provided
+    scheduler_state = checkpoint.get("scheduler_state_dict")
+    if scheduler is not None and scheduler_state is not None:
+        scheduler.load_state_dict(
+            cast(Dict[str, Any], scheduler_state)  # type: ignore[no-untyped-call]
+        )
+    elif scheduler is not None and scheduler_state is None:
+        print(
+            "Warning: Scheduler provided but checkpoint lacks scheduler state."
+            " Scheduler will continue from current state."
+        )
+
     # Restore RNG states
     torch.set_rng_state(checkpoint["rng_state"])
     if checkpoint.get("cuda_rng_state") is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+
+    stored_params = checkpoint.get("params_snapshot")
+    if stored_params:
+        current_params = _collect_params_snapshot()
+        mismatches = {}
+        for key, stored_value in stored_params.items():
+            current_value = current_params.get(key)
+            if current_value != stored_value:
+                mismatches[key] = (stored_value, current_value)
+        if mismatches:
+            mismatch_details = ", ".join(
+                f"{key}: checkpoint={stored} current={current}"
+                for key, (stored, current) in mismatches.items()
+            )
+            message = (
+                "Checkpoint parameter mismatch detected. "
+                f"The following settings differ from current params: {mismatch_details}"
+            )
+            if strict_params:
+                raise RuntimeError(message)
+            else:
+                print(f"Warning: {message}")
 
     epoch = checkpoint["epoch"]
     loss = checkpoint["loss"]
