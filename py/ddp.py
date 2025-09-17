@@ -7,6 +7,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 if TYPE_CHECKING:
@@ -195,6 +196,7 @@ def train_one_epoch(
     tqdm_output: io.TextIOWrapper,
     checkpoint_dir: str,
     run_id: str,
+    writer: SummaryWriter | None,
 ) -> float:
 
     data_queue: mp.Queue[DataQueueMessage] = mp.Queue(maxsize=10)
@@ -239,10 +241,11 @@ def train_one_epoch(
 
     start_time = time.time()
     for batch_idx in range(num_batches):
-
+        batch_start_time = time.time()
         msg = data_queue.get()
         assert msg["type"] == "batch"
         enc_input, dec_input, dec_target = msg["data"]
+        tensor_acquisition = time.time() - batch_start_time
 
         memory = model.module.encode(enc_input)
         output = model.module.decode(enc_input, memory, dec_input)
@@ -257,6 +260,7 @@ def train_one_epoch(
         optimizer.step()
 
         current_loss = loss.item()
+        epoch_loss += current_loss
 
         # Explicitly delete tensors and synchronize CUDA
         del enc_input, dec_input, dec_target, output, memory, loss, msg
@@ -265,17 +269,32 @@ def train_one_epoch(
             estimated_total_time, time_info_str = time_info(
                 num_batches, batch_idx + 1, start_time, time.time()
             )
+            if writer is not None:
+                global_step = epoch * num_batches + batch_idx + 1
+                writer.add_scalar(  # type: ignore[no-untyped-call]
+                    "time/tensor_aquisition", tensor_acquisition, global_step
+                )
+                writer.add_scalar(  # type: ignore[no-untyped-call]
+                    "time/estimated_total", estimated_total_time, global_step
+                )
+                writer.add_scalar(  # type: ignore[no-untyped-call]
+                    "loss/batch/train", current_loss, global_step
+                )
             pbar.update(1)
             pbar.set_postfix({"time": time_info_str, "loss": f"{current_loss:.2f} "})
 
+    avg_loss = epoch_loss / num_batches if num_batches else 0.0
+
     if rank == 0:
-        avg_loss = epoch_loss / num_batches
         print(f"Epoch {epoch} completed. Average loss: {avg_loss:.4f}")
+        if writer is not None:
+            writer.add_scalar(  # type: ignore[no-untyped-call]
+                "loss/epoch/train", avg_loss, epoch + 1
+            )
+            writer.flush()  # type: ignore[no-untyped-call]
 
         # Save checkpoint only on rank 0
         save_checkpoint(model.module, optimizer, epoch, avg_loss, checkpoint_dir)
-    else:
-        avg_loss = epoch_loss / num_batches
 
     # Synchronize all CUDA operations before cleanup
     torch.cuda.synchronize(rank)
@@ -306,6 +325,7 @@ def train_ddp_worker(
     """Main training function for each DDP worker process."""
     # Create log directory using run_id and log_base_path
     log_dir = os.path.join(log_base_path, run_id)
+    os.makedirs(log_dir, exist_ok=True)
 
     console_out, console_err = redirect_stdio(
         os.path.join(log_dir, f"trainer_proc_{rank}.log"), also_console=rank == 0
@@ -313,6 +333,11 @@ def train_ddp_worker(
     print(f"Running DDP training on rank {rank} of {world_size}")
     print(f"Run ID: {run_id}")
     print(f"Log directory: {log_dir}")
+
+    writer: SummaryWriter | None = None
+    if rank == 0:
+        writer_log_dir = os.path.join(log_dir, "tensorboard")
+        writer = SummaryWriter(log_dir=writer_log_dir)  # type: ignore[no-untyped-call]
 
     # Setup DDP
     setup_ddp(rank, world_size)
@@ -348,6 +373,7 @@ def train_ddp_worker(
                 console_err,
                 checkpoint_dir,
                 run_id,
+                writer,
             )
 
             # Launch S3 upload on rank 0 after each epoch (if enabled)
@@ -357,6 +383,8 @@ def train_ddp_worker(
                 )
 
     finally:
+        if writer is not None:
+            writer.close()  # type: ignore[no-untyped-call]
         cleanup_ddp()
 
 
