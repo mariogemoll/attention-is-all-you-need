@@ -55,7 +55,7 @@ def launch_s3_upload_for_epoch(
     checkpoint_dir: str,
     run_id: str,
     log_dir: str,
-    s3_upload_processes: list[mp.Process],
+    s3_upload_processes: list[tuple[mp.Process, str]],
 ) -> None:
     """Launch S3 upload for checkpoint files of a specific epoch."""
     try:
@@ -95,7 +95,7 @@ def launch_s3_upload_for_epoch(
         print(f"S3 upload process started for epoch {epoch} (PID: {upload_process.pid})")
 
         # Add to tracking list
-        s3_upload_processes.append(upload_process)
+        s3_upload_processes.append((upload_process, f"epoch {epoch}"))
 
     except Exception as e:
         print(f"Failed to launch S3 upload for epoch {epoch}: {e}")
@@ -317,7 +317,6 @@ def train_ddp_worker(
     rank: int,
     world_size: int,
     run_id: str,
-    s3_upload_processes: list[mp.Process],
     enable_s3: bool = True,
     resume_from_checkpoint: bool = True,
 ) -> None:
@@ -349,6 +348,8 @@ def train_ddp_worker(
     # Setup checkpoint directory
     checkpoint_dir = "../5_checkpoints"
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    s3_upload_processes: list[tuple[mp.Process, str]] = []
 
     try:
         # Create model
@@ -416,6 +417,21 @@ def train_ddp_worker(
                 )
 
     finally:
+        if rank == 0 and enable_s3 and s3_upload_processes:
+            alive_processes = [item for item in s3_upload_processes if item[0].is_alive()]
+            if alive_processes:
+                print(
+                    f"Rank 0 waiting for {len(alive_processes)} S3 upload process(es) to complete..."
+                )
+                for process, description in alive_processes:
+                    print(f"  PID {process.pid}: {description}")
+                    process.join()
+            for process, _ in s3_upload_processes:
+                if process.is_alive():
+                    process.join()
+            if alive_processes:
+                print("Rank 0: All pending S3 uploads completed.")
+
         if writer is not None:
             writer.close()  # type: ignore[no-untyped-call]
         cleanup_ddp()
@@ -461,24 +477,13 @@ def launch_ddp_training(
 
     print(f"Launching DDP training with {world_size} processes")
 
-    # Create list to track S3 upload processes
-    s3_upload_processes: list[mp.Process] = []
-
     # Spawn training processes
     mp.spawn(  # type: ignore
         train_ddp_worker,
-        args=(world_size, run_id, s3_upload_processes, enable_s3, resume_from_checkpoint),
+        args=(world_size, run_id, enable_s3, resume_from_checkpoint),
         nprocs=world_size,
         join=True,
     )
-
-    # Wait for all S3 upload processes to complete
-    if enable_s3 and s3_upload_processes:
-        print(f"Waiting for {len(s3_upload_processes)} S3 upload processes to complete...")
-        for process in s3_upload_processes:
-            if process.is_alive():
-                process.join()
-        print("All S3 uploads completed.")
 
 
 # Example usage
