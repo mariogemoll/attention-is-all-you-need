@@ -191,13 +191,25 @@ def get_checkpoint_files(checkpoint_dir: str, epoch: int) -> List[str]:
     files = []
 
     # Epoch-specific files only
-    checkpoint_file = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
-    model_file = os.path.join(checkpoint_dir, f"model_epoch_{epoch}.pt")
+    epoch_str = f"{epoch:04d}"
+    checkpoint_candidates = [
+        os.path.join(checkpoint_dir, f"checkpoint_{epoch_str}.pt"),
+        os.path.join(checkpoint_dir, f"checkpoint_{epoch}.pt"),
+        os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch_str}.pt"),
+        os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt"),
+    ]
+    model_candidates = [
+        os.path.join(checkpoint_dir, f"model_{epoch_str}.pt"),
+        os.path.join(checkpoint_dir, f"model_{epoch}.pt"),
+        os.path.join(checkpoint_dir, f"model_epoch_{epoch_str}.pt"),
+        os.path.join(checkpoint_dir, f"model_epoch_{epoch}.pt"),
+    ]
 
-    # Add files that exist
-    for file_path in [checkpoint_file, model_file]:
-        if os.path.exists(file_path):
-            files.append(file_path)
+    for candidates in (checkpoint_candidates, model_candidates):
+        for file_path in candidates:
+            if os.path.exists(file_path):
+                files.append(file_path)
+                break
 
     return files
 

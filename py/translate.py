@@ -4,9 +4,8 @@ Translation script for German to English translation using trained transformer m
 
 Usage:
     python translate.py <model_weights_file> <source_text>
-    python translate.py model_epoch_7.pt "Hallo Welt"
-    python translate.py checkpoints/model_latest.pt "Das ist ein Test."
-    echo "Wie geht es dir?" | python translate.py model_epoch_7.pt
+    python translate.py model_0007.pt "Hallo Welt"
+    echo "Wie geht es dir?" | python translate.py model_0007.pt
 """
 
 import argparse
@@ -175,7 +174,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Translate German text to English")
     parser.add_argument(
         "model_weights_file",
-        help="Path to model weights file (e.g., model_epoch_7.pt, checkpoints/model_latest.pt)",
+        help="Path to model weights file (e.g., model_0007.pt)",
     )
     parser.add_argument(
         "source_text",

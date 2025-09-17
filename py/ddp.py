@@ -24,7 +24,7 @@ from s3_upload import (
     launch_s3_upload_background,
     validate_s3_config,
 )
-from training import save_checkpoint
+from training import find_latest_checkpoint, load_checkpoint, save_checkpoint
 
 
 class DummyProgressBar:
@@ -208,7 +208,7 @@ def train_one_epoch(
         target=batch_producer_with_logging,
         args=(
             target_num_tokens_per_batch,
-            "../4_tokens/train",
+            "../4_tokens/mini",
             world_size,
             rank,
             "cuda:" + str(rank),
@@ -270,7 +270,7 @@ def train_one_epoch(
                 num_batches, batch_idx + 1, start_time, time.time()
             )
             if writer is not None:
-                global_step = epoch * num_batches + batch_idx + 1
+                global_step = (epoch - 1) * num_batches + batch_idx + 1
                 writer.add_scalar(  # type: ignore[no-untyped-call]
                     "time/tensor_aquisition", tensor_acquisition, global_step
                 )
@@ -288,9 +288,7 @@ def train_one_epoch(
     if rank == 0:
         print(f"Epoch {epoch} completed. Average loss: {avg_loss:.4f}")
         if writer is not None:
-            writer.add_scalar(  # type: ignore[no-untyped-call]
-                "loss/epoch/train", avg_loss, epoch + 1
-            )
+            writer.add_scalar("loss/epoch/train", avg_loss, epoch)  # type: ignore[no-untyped-call]
             writer.flush()  # type: ignore[no-untyped-call]
 
         # Save checkpoint only on rank 0
@@ -321,6 +319,7 @@ def train_ddp_worker(
     run_id: str,
     s3_upload_processes: list[mp.Process],
     enable_s3: bool = True,
+    resume_from_checkpoint: bool = True,
 ) -> None:
     """Main training function for each DDP worker process."""
     # Create log directory using run_id and log_base_path
@@ -360,9 +359,43 @@ def train_ddp_worker(
         # Create optimizer
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
+        start_epoch = 1
+        if resume_from_checkpoint:
+            checkpoint_info: list[str | None] = [None]
+            if rank == 0:
+                latest_checkpoint = find_latest_checkpoint(checkpoint_dir)
+                if latest_checkpoint:
+                    print(f"Found checkpoint for resume: {latest_checkpoint}")
+                else:
+                    print("No checkpoint found, starting DDP training from scratch")
+                checkpoint_info[0] = latest_checkpoint
+
+            dist.broadcast_object_list(checkpoint_info, src=0)
+            latest_checkpoint = checkpoint_info[0]
+
+            if latest_checkpoint:
+                try:
+                    last_epoch, _ = load_checkpoint(model.module, optimizer, latest_checkpoint)
+                    start_epoch = last_epoch + 1
+                    print(f"Rank {rank}: Resuming from epoch {start_epoch}")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Failed to load checkpoint '{latest_checkpoint}': {e}")
+                        print("Starting training from scratch")
+                    start_epoch = 1
+
+        start_epoch_list = [start_epoch]
+        dist.broadcast_object_list(start_epoch_list, src=0)
+        start_epoch = int(start_epoch_list[0])
+
+        if start_epoch > num_epochs:
+            if rank == 0:
+                print(f"All {num_epochs} epochs already completed according to checkpoints.")
+            return
+
         # Training loop
         model.train()  # type: ignore
-        for epoch in range(num_epochs):
+        for epoch in range(start_epoch, num_epochs + 1):
             train_one_epoch(
                 rank,
                 world_size,
@@ -388,7 +421,11 @@ def train_ddp_worker(
         cleanup_ddp()
 
 
-def launch_ddp_training(world_size: int | None = None, enable_s3: bool = True) -> None:
+def launch_ddp_training(
+    world_size: int | None = None,
+    enable_s3: bool = True,
+    resume_from_checkpoint: bool = True,
+) -> None:
     """Launch DDP training across multiple GPUs."""
 
     # Generate run ID with timestamp
@@ -430,7 +467,7 @@ def launch_ddp_training(world_size: int | None = None, enable_s3: bool = True) -
     # Spawn training processes
     mp.spawn(  # type: ignore
         train_ddp_worker,
-        args=(world_size, run_id, s3_upload_processes, enable_s3),
+        args=(world_size, run_id, s3_upload_processes, enable_s3, resume_from_checkpoint),
         nprocs=world_size,
         join=True,
     )

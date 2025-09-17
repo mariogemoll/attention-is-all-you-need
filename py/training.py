@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 
 import torch
@@ -29,19 +30,21 @@ def save_checkpoint(
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Save model weights separately
-    model_weights_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch}.pt")
+    epoch_str = f"{epoch:04d}"
+    model_weights_file = f"model_{epoch_str}.pt"
+    model_weights_path = os.path.join(checkpoint_dir, model_weights_file)
     torch.save(model.state_dict(), model_weights_path)
 
     # Save checkpoint metadata (without model weights)
     checkpoint_metadata = {
         "epoch": epoch,
-        "model_weights_file": f"model_epoch_{epoch}.pt",
+        "model_weights_file": model_weights_file,
         "optimizer_state_dict": optimizer.state_dict(),
         "loss": loss,
         "rng_state": torch.get_rng_state(),
         "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
     }
-    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{epoch_str}.pt")
     torch.save(checkpoint_metadata, checkpoint_path)
 
     print(f"Checkpoint saved: {checkpoint_path}")
@@ -78,11 +81,30 @@ def load_checkpoint(
 
 
 def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
-    """Find the latest checkpoint file."""
-    latest_path = os.path.join(checkpoint_dir, "checkpoint_latest.pt")
-    if os.path.exists(latest_path):
-        return latest_path
-    return None
+    """Find the latest checkpoint file by epoch number."""
+    if not os.path.isdir(checkpoint_dir):
+        return None
+
+    latest_epoch = -1
+    latest_path: str | None = None
+
+    pattern = re.compile(r"^checkpoint(?:_epoch)?_(\d+)\.pt$")
+
+    for filename in os.listdir(checkpoint_dir):
+        match = pattern.match(filename)
+        if not match:
+            continue
+
+        try:
+            epoch_num = int(match.group(1))
+        except ValueError:
+            continue
+
+        if epoch_num > latest_epoch:
+            latest_epoch = epoch_num
+            latest_path = os.path.join(checkpoint_dir, filename)
+
+    return latest_path
 
 
 def clean_up_old_checkpoints(checkpoint_dir: str, keep_last: int = 3) -> None:
@@ -100,21 +122,24 @@ def clean_up_old_checkpoints(checkpoint_dir: str, keep_last: int = 3) -> None:
     model_files = []
 
     for filename in os.listdir(checkpoint_dir):
-        if filename.startswith("checkpoint_epoch_") and filename.endswith(".pt"):
+        checkpoint_match = re.match(r"^checkpoint(?:_epoch)?_(\d+)\.pt$", filename)
+        if checkpoint_match:
             try:
-                epoch_num = int(filename.replace("checkpoint_epoch_", "").replace(".pt", ""))
-                checkpoint_path = os.path.join(checkpoint_dir, filename)
-                checkpoint_files.append((epoch_num, checkpoint_path))
+                epoch_num = int(checkpoint_match.group(1))
             except ValueError:
                 continue
+            checkpoint_path = os.path.join(checkpoint_dir, filename)
+            checkpoint_files.append((epoch_num, checkpoint_path))
+            continue
 
-        elif filename.startswith("model_epoch_") and filename.endswith(".pt"):
+        model_match = re.match(r"^model(?:_epoch)?_(\d+)\.pt$", filename)
+        if model_match:
             try:
-                epoch_num = int(filename.replace("model_epoch_", "").replace(".pt", ""))
-                model_path = os.path.join(checkpoint_dir, filename)
-                model_files.append((epoch_num, model_path))
+                epoch_num = int(model_match.group(1))
             except ValueError:
                 continue
+            model_path = os.path.join(checkpoint_dir, filename)
+            model_files.append((epoch_num, model_path))
 
     # Sort by epoch number and keep only the most recent ones
     checkpoint_files.sort(key=lambda x: x[0])

@@ -9,7 +9,7 @@ num_model_dims = 512
 num_heads = 8
 num_layers = 6
 
-num_epochs = 3
+num_epochs = 10
 
 seq_len_step_size = 16
 

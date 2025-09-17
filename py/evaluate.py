@@ -4,8 +4,7 @@ Standalone evaluation script for model evaluation on validation dataset.
 
 Usage:
     python evaluate.py <model_weights_file>
-    python evaluate.py model_epoch_5.pt
-    python evaluate.py checkpoints/model_latest.pt
+    python evaluate.py model_0005.pt
 """
 
 import argparse
@@ -27,7 +26,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained model on validation dataset")
     parser.add_argument(
         "model_weights_file",
-        help="Path to the model weights file (e.g., model_epoch_5.pt, checkpoints/model_latest.pt)",
+        help="Path to the model weights file (e.g., model_0005.pt)",
     )
     parser.add_argument(
         "--dataset",
