@@ -63,7 +63,58 @@ class Transformer(nn.Module):
         # Weight tying
         self.to_token_map.weight = self.tgt_embedding.weight
 
-        # TODO Initialize weights
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Initialize TransformerEncoder layers
+        for layer in self.encoder.layers:
+            self._init_transformer_layer(layer)
+
+        # Initialize TransformerDecoder layers
+        for layer in self.decoder.layers:
+            self._init_transformer_layer(layer)
+
+        # Initialize embeddings with normal distribution
+        nn.init.normal_(self.src_embedding.weight, mean=0.0, std=0.1)
+        nn.init.normal_(self.tgt_embedding.weight, mean=0.0, std=0.1)
+
+        # Initialize the final linear layer
+        nn.init.xavier_uniform_(self.to_token_map.weight)
+
+    def _init_transformer_layer(self, layer: nn.Module) -> None:
+        # Initialize multi-head attention
+        if hasattr(layer, "self_attn") and isinstance(layer.self_attn, nn.MultiheadAttention):
+            self._init_attention(layer.self_attn)
+        if hasattr(layer, "multihead_attn") and isinstance(
+            layer.multihead_attn, nn.MultiheadAttention
+        ):
+            self._init_attention(layer.multihead_attn)
+
+        # Initialize feed-forward network
+        if hasattr(layer, "linear1") and isinstance(layer.linear1, nn.Linear):
+            nn.init.xavier_uniform_(layer.linear1.weight)
+            nn.init.zeros_(layer.linear1.bias)
+        if hasattr(layer, "linear2") and isinstance(layer.linear2, nn.Linear):
+            nn.init.xavier_uniform_(layer.linear2.weight)
+            nn.init.zeros_(layer.linear2.bias)
+
+        # Initialize layer norms
+        if hasattr(layer, "norm1") and isinstance(layer.norm1, nn.LayerNorm):
+            nn.init.ones_(layer.norm1.weight)
+            nn.init.zeros_(layer.norm1.bias)
+        if hasattr(layer, "norm2") and isinstance(layer.norm2, nn.LayerNorm):
+            nn.init.ones_(layer.norm2.weight)
+            nn.init.zeros_(layer.norm2.bias)
+        if hasattr(layer, "norm3") and isinstance(layer.norm3, nn.LayerNorm):  # For decoder layers
+            nn.init.ones_(layer.norm3.weight)
+            nn.init.zeros_(layer.norm3.bias)
+
+    def _init_attention(self, attn: nn.MultiheadAttention) -> None:
+        # Initialize attention weights
+        nn.init.xavier_uniform_(attn.in_proj_weight)
+        nn.init.zeros_(attn.in_proj_bias)
+        nn.init.xavier_uniform_(attn.out_proj.weight)
+        nn.init.zeros_(attn.out_proj.bias)
 
     def encode(self, src: torch.Tensor) -> torch.Tensor:
         src_padding_mask = src == pad
