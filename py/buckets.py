@@ -5,7 +5,7 @@ from functools import partial
 from multiprocessing import Pool
 from typing import BinaryIO, Generator
 
-from dataset import Dataset, open_dataset
+from dataset import Dataset, get_entry, open_dataset
 
 
 class BucketedDataset:
@@ -16,6 +16,46 @@ class BucketedDataset:
         self.step_size = step_size
         self.num_buckets = num_buckets
         self.dataset = dataset
+
+    def iter_bucket_entries(
+        self, bucket_id: int
+    ) -> Generator[tuple[int, int, int, int, list[int], list[int]], None, None]:
+        """
+        Iterate over entries in a specific bucket.
+
+        Args:
+            bucket_id: ID of the bucket to iterate over
+
+        Yields:
+            Tuple of (bucket_id, idx_in_bucket, corpus_id, original_line_number, src_tokens,
+            tgt_tokens)
+        """
+        bucket_sizes = get_bucket_sizes(self.bucket_index_file)
+
+        if bucket_id >= len(bucket_sizes):
+            return
+
+        bucket_size = bucket_sizes[bucket_id]
+
+        for idx_in_bucket in range(bucket_size):
+            entry_idx = get_entry_idx_from_bucket(self.bucket_index_file, bucket_id, idx_in_bucket)
+            corpus_id, original_line_number, src_tokens, tgt_tokens = get_entry(
+                self.dataset, entry_idx
+            )
+            yield bucket_id, idx_in_bucket, corpus_id, original_line_number, src_tokens, tgt_tokens
+
+    def iter_all_entries(
+        self,
+    ) -> Generator[tuple[int, int, int, int, list[int], list[int]], None, None]:
+        """
+        Iterate over all entries in all buckets.
+
+        Yields:
+            Tuple of (bucket_id, idx_in_bucket, corpus_id, original_line_number, src_tokens,
+            tgt_tokens)
+        """
+        for bucket_id in range(self.num_buckets):
+            yield from self.iter_bucket_entries(bucket_id)
 
 
 @contextmanager
@@ -240,6 +280,26 @@ def get_bucket_sizes(
         entry_count = bucket_byte_size // 4
         bucket_sizes.append(entry_count)
     return bucket_sizes
+
+
+def get_bucket_size(
+    bucket_index_file: BinaryIO,
+    bucket_id: int,
+) -> int:
+    """
+    Get the number of entries in a specific bucket from an opened bucket index file.
+
+    Args:
+        bucket_index_file: Open binary file handle for reading bucket index
+        bucket_id: ID of the bucket to get size for
+
+    Returns:
+        Number of entries in the specified bucket
+    """
+    bucket_sizes = get_bucket_sizes(bucket_index_file)
+    if bucket_id >= len(bucket_sizes):
+        raise ValueError(f"Bucket ID {bucket_id} >= number of buckets {len(bucket_sizes)}")
+    return bucket_sizes[bucket_id]
 
 
 def get_entry_idx_from_bucket(

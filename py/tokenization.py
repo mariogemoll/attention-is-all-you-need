@@ -424,7 +424,10 @@ def detokenize_dataset(
         # Convert to final sequential dataset
         seq_index_path = os.path.join(temp_dir, "final.idx")
         seq_data_path = os.path.join(temp_dir, "final.bin")
-        convert_to_sequential(ooo_index_path, ooo_data_path, seq_index_path, seq_data_path)
+        with open(ooo_index_path, "rb") as ooo_idx, open(ooo_data_path, "rb") as ooo_data, open(
+            seq_index_path, "wb"
+        ) as seq_idx, open(seq_data_path, "wb") as seq_data:
+            convert_to_sequential(ooo_idx, ooo_data, seq_idx, seq_data)
 
         # Write ordered text output
         output_dir = os.path.dirname(output_file_path)

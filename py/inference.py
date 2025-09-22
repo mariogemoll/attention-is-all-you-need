@@ -1,7 +1,9 @@
+from dataclasses import dataclass
 from itertools import islice
-from typing import BinaryIO, Dict, Iterator, Tuple
+from typing import BinaryIO, Dict, Iterator, List, Tuple
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from batching import BucketEntries
@@ -12,15 +14,18 @@ from model import Transformer
 from params import eos, pad, sos, target_num_tokens_per_batch
 
 
-class SequenceInfo:
-    src_tokens: list[int]
-    src_encoding: torch.Tensor
-    tgt_tokens: list[int]
+@dataclass
+class BeamState:
+    tokens: List[int]
+    log_prob: float
+    ended: bool = False
 
-    def __init__(self, src_tokens: list[int], src_encoding: torch.Tensor, tgt_tokens: list[int]):
-        self.src_tokens = src_tokens
-        self.src_encoding = src_encoding
-        self.tgt_tokens = tgt_tokens
+
+@dataclass
+class SequenceInfo:
+    src_tokens: List[int]
+    src_encoding: torch.Tensor
+    beams: List[BeamState]
 
 
 def add_src_sequences(
@@ -42,8 +47,11 @@ def add_src_sequences(
     enc_input_tensor = torch.tensor(enc_input, dtype=torch.long, device=device)
     encoded = model.encode(enc_input_tensor)
     for i in range(len(batch)):
-        sequences[batch[i][0]] = SequenceInfo(
-            src_tokens=src_tokens, src_encoding=encoded[i], tgt_tokens=[sos]
+        line_number, src_tokens = batch[i]
+        sequences[line_number] = SequenceInfo(
+            src_tokens=src_tokens,
+            src_encoding=encoded[i],
+            beams=[BeamState(tokens=[sos], log_prob=0.0, ended=False)],
         )
     return len(batch)
 
@@ -68,9 +76,8 @@ def add_spillover_sequences(
         enc_input_tensor = torch.tensor(enc_input, dtype=torch.long, device=device)
         encoded = model.encode(enc_input_tensor)
         for i, (line_number, info) in enumerate(batch):
-            sequences[line_number] = SequenceInfo(
-                src_tokens=info.src_tokens, src_encoding=encoded[i], tgt_tokens=info.tgt_tokens
-            )
+            info.src_encoding = encoded[i]
+            sequences[line_number] = info
             spillover_sequences.pop(line_number, None)
 
 
@@ -80,13 +87,20 @@ def store_output(output_index_file: BinaryIO, output_data_file: BinaryIO, data: 
 
 
 def translate_dataset(
-    device: torch.device, model: Transformer, input_path_prefix: str, output_path_prefix: str
+    device: torch.device,
+    model: Transformer,
+    input_path_prefix: str,
+    output_path_prefix: str,
+    beam_size: int = 4,
 ) -> None:
+    if beam_size < 1:
+        raise ValueError("beam_size must be at least 1")
+
     model.eval()
 
     sequences: Dict[int, SequenceInfo] = {}
     spillover_sequences: Dict[int, SequenceInfo] = {}
-    completed_sequences: Dict[int, list[int]] = {}  # Map from line_number to translated tokens
+    completed_sequences: Dict[int, list[int]] = {}
 
     with open_buckets(input_path_prefix) as dataset, torch.no_grad():
         for bucket_idx in range(dataset.num_buckets):
@@ -98,7 +112,6 @@ def translate_dataset(
 
             num_sequences_completed = 0
             bucket_iterator = iter(bucket_entries)
-            iteration_count = 0
 
             pbar = tqdm(
                 total=len(bucket_entries) + len(spillover_sequences), desc=f"Bucket {bucket_idx}"
@@ -111,8 +124,7 @@ def translate_dataset(
             )
 
             while True:
-                iteration_count += 1
-                # Try to get num_rows seqences we can process
+                # Try to get num_rows sequences we can process
                 batch = dict(islice(sequences.items(), num_rows))
                 if not batch or len(batch) < num_rows:
                     num_seqs_added = add_src_sequences(
@@ -128,81 +140,117 @@ def translate_dataset(
                         # We added sequences, get a fresh batch
                         batch = dict(islice(sequences.items(), num_rows))
 
-                # If we have any zero length sequences in the batch, we just handle those and then
-                # run the loop again
-                zero_length_seqs = [
-                    (line_number, info)
-                    for line_number, info in batch.items()
-                    if (len(info.src_tokens) == 0)
+                zero_length_sequences = [
+                    line_number for line_number, info in batch.items() if len(info.src_tokens) == 0
                 ]
-                if len(zero_length_seqs) > 0:
-                    for line_number, info in zero_length_seqs:
-                        # Handle zero length sequences (e.g., by removing them)
-                        batch.pop(line_number, None)
+                if zero_length_sequences:
+                    for line_number in zero_length_sequences:
                         completed_sequences[line_number] = []
-                    print(f"processed {len(zero_length_seqs)} zero length sequences")
+                        sequences.pop(line_number, None)
+                    num_sequences_completed += len(zero_length_sequences)
+                    pbar.update(len(zero_length_sequences))
+                    print(f"processed {len(zero_length_sequences)} zero length sequences")
                     continue
 
-                enc_input = [info.src_tokens for info in batch.values()]
-                memory = [info.src_encoding for info in batch.values()]
-                dec_input = [info.tgt_tokens for info in batch.values()]
+                beam_entries: List[Tuple[int, int, BeamState]] = []
+                enc_input_padded: List[List[int]] = []
+                memory_tensors: List[torch.Tensor] = []
+                dec_input_padded: List[List[int]] = []
+                sequence_candidates: Dict[int, List[BeamState]] = {
+                    line_number: [] for line_number in batch.keys()
+                }
 
-                enc_input_padded = []
-                for src_tokens in enc_input:
-                    # Pad the source tokens to seq_len
-                    padded_src = src_tokens + [pad] * (seq_len - len(src_tokens))
-                    enc_input_padded.append(padded_src)
+                for line_number, info in batch.items():
+                    padded_src = info.src_tokens + [pad] * (seq_len - len(info.src_tokens))
+                    for beam_idx, beam_state in enumerate(info.beams):
+                        if beam_state.ended:
+                            sequence_candidates[line_number].append(beam_state)
+                            continue
+                        if len(beam_state.tokens) > seq_len:
+                            # Tokens are already longer than this bucket allows; handle spillover
+                            sequence_candidates[line_number].append(beam_state)
+                            continue
+                        beam_entries.append((line_number, beam_idx, beam_state))
+                        enc_input_padded.append(padded_src)
+                        memory_tensors.append(info.src_encoding)
+                        padded_tgt = beam_state.tokens + [pad] * (seq_len - len(beam_state.tokens))
+                        dec_input_padded.append(padded_tgt)
 
-                dec_input_padded = []
-                for tgt_tokens in dec_input:
-                    # Pad the target tokens to seq_len
-                    padded_tgt = tgt_tokens + [pad] * (seq_len - len(tgt_tokens))
-                    dec_input_padded.append(padded_tgt)
+                if beam_entries:
+                    enc_input_tensor = torch.tensor(
+                        enc_input_padded, dtype=torch.long, device=device
+                    )
+                    memory_tensor = torch.stack(memory_tensors, dim=0)
+                    dec_input_tensor = torch.tensor(
+                        dec_input_padded, dtype=torch.long, device=device
+                    )
+                    decode_output = model.decode(enc_input_tensor, memory_tensor, dec_input_tensor)
+                else:
+                    decode_output = None
 
-                enc_input_tensor = torch.tensor(enc_input_padded, dtype=torch.long, device=device)
-                memory_tensor = torch.stack(memory, dim=0)
-                dec_input_tensor = torch.tensor(dec_input_padded, dtype=torch.long, device=device)
+                if decode_output is not None:
+                    for idx, (line_number, _beam_idx, beam_state) in enumerate(beam_entries):
+                        current_length = len(beam_state.tokens)
+                        logits = decode_output[idx][current_length - 1]
+                        log_probs = F.log_softmax(logits, dim=0)
+                        top_log_probs, top_indices = torch.topk(log_probs, beam_size)
 
-                result = model.decode(enc_input_tensor, memory_tensor, dec_input_tensor)
+                        expanded = False
+                        for j in range(top_indices.shape[0]):
+                            token = int(top_indices[j].item())
+                            if token == pad:
+                                continue
+                            token_log_prob = float(top_log_probs[j].item())
+                            new_tokens = list(beam_state.tokens)
+                            ended = False
+                            if token == eos:
+                                ended = True
+                            else:
+                                new_tokens.append(token)
+                            sequence_candidates[line_number].append(
+                                BeamState(
+                                    tokens=new_tokens,
+                                    log_prob=beam_state.log_prob + token_log_prob,
+                                    ended=ended,
+                                )
+                            )
+                            expanded = True
 
-                # Go through the result
+                        if not expanded:
+                            # Keep the original beam around so we can continue in the next iteration
+                            sequence_candidates[line_number].append(beam_state)
 
-                for i, (line_number, info) in enumerate(batch.items()):
-                    # Look at the newly generated token (at the current length of target tokens)
-                    current_tgt_len = len(info.tgt_tokens)
+                for line_number, info in list(batch.items()):
+                    candidates = sequence_candidates.get(line_number, [])
+                    if not candidates:
+                        candidates = info.beams
 
-                    new_token = int(result[i][current_tgt_len - 1].argmax().item())
+                    candidates.sort(key=lambda beam: beam.log_prob, reverse=True)
+                    info.beams = candidates[:beam_size]
 
-                    if new_token == pad:
-                        raise ValueError("Generated padding token")
-
-                    if new_token == eos:
-                        # If the sequence ends with eos, it's completely translated. Store the
-                        # result and remove the sequence from sequences
-                        final_sequence = info.tgt_tokens[1:]  # Remove SOS token
-                        completed_sequences[line_number] = final_sequence
+                    if all(beam.ended for beam in info.beams):
+                        best_beam = info.beams[0]
+                        completed_sequences[line_number] = best_beam.tokens[1:]
                         sequences.pop(line_number, None)
                         num_sequences_completed += 1
                         pbar.update(1)
-                    elif current_tgt_len == seq_len:
-                        # We've exhausted the sequence length for this bucket (and we haven't
-                        # generated eos yet), so we need to move this sequence into the next bucket
-                        info.tgt_tokens.append(new_token)
+                        continue
+
+                    if any((len(beam.tokens) > seq_len) and not beam.ended for beam in info.beams):
                         spillover_sequences[line_number] = info
                         sequences.pop(line_number, None)
                         num_sequences_completed += 1
                         pbar.update(1)
-                    else:
-                        # Otherwise, we just add the new token to the list
-                        sequences[line_number].tgt_tokens.append(new_token)
 
             pbar.close()
             print(f"Total sequences completed: {num_sequences_completed}")
             print(f"Spillover sequences: {len(spillover_sequences)}")
-        # We're done with all the buckets. If we still have spillover sequences, store the tokens we
-        # have generated for those
-        for line_number, info in spillover_sequences.items():
-            completed_sequences[line_number] = info.tgt_tokens[1:]
+
+        # We're done with all the buckets. If we still have spillover sequences (or active ones),
+        # store the tokens we have generated for those.
+        for line_number, info in {**spillover_sequences, **sequences}.items():
+            best_beam = max(info.beams, key=lambda beam: beam.log_prob)
+            completed_sequences[line_number] = best_beam.tokens[1:]
 
     # Write all completed sequences to files in order
     with open(output_path_prefix + ".bin", "wb") as output_data_file, open(

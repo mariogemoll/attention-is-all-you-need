@@ -43,7 +43,7 @@ def read_entry(index_file: BinaryIO, data_file: BinaryIO, idx: int) -> bytes:
 
 
 def convert_to_sequential(
-    in_index_path: str, in_data_path: str, out_index_path: str, out_data_path: str
+    in_idx: BinaryIO, in_data: BinaryIO, out_idx: BinaryIO, out_data: BinaryIO
 ) -> None:
     """
     Convert an out-of-order indexed pair (start/end per entry) into the
@@ -57,28 +57,25 @@ def convert_to_sequential(
       - out_index_path: path to write sequential index (4 bytes per entry)
       - out_data_path: path to write data in index order
     """
-    with open(in_index_path, "rb") as in_idx, open(in_data_path, "rb") as in_data, open(
-        out_index_path, "wb"
-    ) as out_idx, open(out_data_path, "wb") as out_data:
-        # Determine number of entries
-        in_idx.seek(0, 2)
-        num_entries = in_idx.tell() // 8
-        in_idx.seek(0)
+    # Determine number of entries
+    in_idx.seek(0, 2)
+    num_entries = in_idx.tell() // 8
+    in_idx.seek(0)
 
-        # Copy entries in index order into new data file and emit cumulative ends
-        cumulative_end = 0
-        for i in range(num_entries):
-            in_idx.seek(i * 8)
-            start = read_uint32(in_idx)
-            end = read_uint32(in_idx)
-            if end < start:
-                raise ValueError(f"Invalid entry {i}: end < start")
-            length = end - start
-            if length > 0:
-                in_data.seek(start)
-                chunk = in_data.read(length)
-                if len(chunk) != length:
-                    raise IOError(f"Failed to read {length} bytes for entry {i}")
-                out_data.write(chunk)
-            cumulative_end += length
-            write_uint32(out_idx, cumulative_end)
+    # Copy entries in index order into new data file and emit cumulative ends
+    cumulative_end = 0
+    for i in range(num_entries):
+        in_idx.seek(i * 8)
+        start = read_uint32(in_idx)
+        end = read_uint32(in_idx)
+        if end < start:
+            raise ValueError(f"Invalid entry {i}: end < start")
+        length = end - start
+        if length > 0:
+            in_data.seek(start)
+            chunk = in_data.read(length)
+            if len(chunk) != length:
+                raise IOError(f"Failed to read {length} bytes for entry {i}")
+            out_data.write(chunk)
+        cumulative_end += length
+        write_uint32(out_idx, cumulative_end)

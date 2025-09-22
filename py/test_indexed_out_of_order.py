@@ -49,7 +49,10 @@ def test_convert_to_sequential_roundtrip() -> None:
 
         out_data = os.path.join(tmpdir, "out.bin")
         out_idx = os.path.join(tmpdir, "out.idx")
-        convert_to_sequential(in_idx, in_data, out_idx, out_data)
+        with open(in_idx, "rb") as in_idx_f, open(in_data, "rb") as in_data_f, open(
+            out_idx, "wb"
+        ) as out_idx_f, open(out_data, "wb") as out_data_f:
+            convert_to_sequential(in_idx_f, in_data_f, out_idx_f, out_data_f)
 
         with open(out_data, "rb") as data_f, open(out_idx, "rb") as idx_f:
             for i, expected in enumerate(entries):
