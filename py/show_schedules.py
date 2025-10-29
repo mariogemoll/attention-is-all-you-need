@@ -20,4 +20,4 @@ plt.ylabel("Learning Rate")
 plt.title("Learning Rate Schedule")
 plt.legend()
 plt.grid(True)
-plt.show()  # type: ignore[no-untyped-call]
+plt.show()
