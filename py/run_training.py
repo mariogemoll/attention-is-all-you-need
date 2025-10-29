@@ -27,7 +27,7 @@ def main() -> None:
 
     total_epochs = 10
 
-    with open_buckets("../4_tokens/val") as valset:
+    with open_buckets("../4_tokens/newstest2013") as valset:
         for epoch in range(start_epoch, total_epochs + 1):
 
             data_queue: mp.Queue[DataQueueMessage] = mp.Queue(maxsize=10)
@@ -39,7 +39,7 @@ def main() -> None:
                 target=batch_producer,
                 args=(
                     target_num_tokens_per_batch,
-                    "../4_tokens/val",
+                    "../4_tokens/newstest2013",
                     1,
                     0,
                     device_id,

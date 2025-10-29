@@ -30,8 +30,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--dataset",
-        default="../4_tokens/val",
-        help="Path to validation dataset (default: ../4_tokens/val)",
+        default="../4_tokens/newstest2013",
+        help="Path to validation dataset (default: ../4_tokens/newstest2013)",
     )
     parser.add_argument(
         "--no-tensorboard",
