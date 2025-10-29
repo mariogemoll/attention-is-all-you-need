@@ -276,6 +276,10 @@ def train_one_epoch(
         # Backward pass
         optimizer.zero_grad()
         loss.backward()
+
+        # Compute gradient norm
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"))
+
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
@@ -304,6 +308,9 @@ def train_one_epoch(
                 )
                 writer.add_scalar(  # type: ignore[no-untyped-call]
                     "lr/batch", current_lr, global_step
+                )
+                writer.add_scalar(  # type: ignore[no-untyped-call]
+                    "gradient_norm/batch", grad_norm.item(), global_step
                 )
             pbar.update(1)
             pbar.set_postfix({"time": time_info_str, "loss": f"{current_loss:.2f} "})
