@@ -8,23 +8,25 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 DOWNLOAD_DIR=$SCRIPT_DIR/../0_download
 
-# Define URLs for each dataset
-declare -A DATASET_URLS=(
-    ["europarl-v7"]="https://www.statmt.org/europarl/v7/de-en.tgz"
-    ["commoncrawl"]="https://www.statmt.org/wmt13/training-parallel-commoncrawl.tgz"
-    ["news-commentary-v9"]="https://www.statmt.org/wmt14/training-parallel-nc-v9.tgz"
-    ["newstest2013"]="https://www.statmt.org/wmt14/dev.tgz"
-    ["newstest2014"]="https://www.statmt.org/wmt14/test-full.tgz"
-)
+# List of all available datasets
+ALL_DATASETS="europarl-v7 commoncrawl news-commentary-v9 newstest2013 newstest2014"
+
+# Function to get URL for a dataset
+get_dataset_url() {
+    case $1 in
+        "europarl-v7") echo "https://www.statmt.org/europarl/v7/de-en.tgz" ;;
+        "commoncrawl") echo "https://www.statmt.org/wmt13/training-parallel-commoncrawl.tgz" ;;
+        "news-commentary-v9") echo "https://www.statmt.org/wmt14/training-parallel-nc-v9.tgz" ;;
+        "newstest2013") echo "https://www.statmt.org/wmt14/dev.tgz" ;;
+        "newstest2014") echo "https://www.statmt.org/wmt14/test-full.tgz" ;;
+        *) echo "" ;;
+    esac
+}
 
 # Function to show usage
 show_usage() {
-    local datasets="all"
-    for dataset in "${!DATASET_URLS[@]}"; do
-        datasets="$datasets, $dataset"
-    done
     echo "Usage: $0 <dataset>"
-    echo "  dataset: $datasets"
+    echo "  dataset: all, $ALL_DATASETS"
     exit 1
 }
 
@@ -43,13 +45,15 @@ echo "Downloading files for dataset: $DATASET"
 URLS=()
 case $DATASET in
     "all")
-        for dataset in "${!DATASET_URLS[@]}"; do
-            URLS+=("${DATASET_URLS[$dataset]}")
+        for dataset in $ALL_DATASETS; do
+            url=$(get_dataset_url "$dataset")
+            URLS+=("$url")
         done
         ;;
     *)
-        if [[ -n "${DATASET_URLS[$DATASET]}" ]]; then
-            URLS=("${DATASET_URLS[$DATASET]}")
+        url=$(get_dataset_url "$DATASET")
+        if [[ -n "$url" ]]; then
+            URLS=("$url")
         else
             echo "Error: Unknown dataset '$DATASET'"
             show_usage

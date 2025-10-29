@@ -9,23 +9,25 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DOWNLOAD_DIR=$SCRIPT_DIR/../0_download
 INPUT_DIR=$SCRIPT_DIR/../1_input
 
-# Define available extraction functions
-declare -A extractors=(
-    ["europarl-v7"]="extract_europarl_v7"
-    ["commoncrawl"]="extract_commoncrawl"
-    ["news-commentary-v9"]="extract_news_commentary_v9"
-    ["newstest2013"]="extract_newstest2013"
-    ["newstest2014"]="extract_newstest2014"
-)
+# List of all available datasets
+ALL_DATASETS="europarl-v7 commoncrawl news-commentary-v9 newstest2013 newstest2014"
+
+# Function to get extractor function name for a dataset
+get_extractor() {
+    case $1 in
+        "europarl-v7") echo "extract_europarl_v7" ;;
+        "commoncrawl") echo "extract_commoncrawl" ;;
+        "news-commentary-v9") echo "extract_news_commentary_v9" ;;
+        "newstest2013") echo "extract_newstest2013" ;;
+        "newstest2014") echo "extract_newstest2014" ;;
+        *) echo "" ;;
+    esac
+}
 
 # Function to show usage
 show_usage() {
-    local datasets="all"
-    for dataset in "${!extractors[@]}"; do
-        datasets="$datasets, $dataset"
-    done
     echo "Usage: $0 <dataset>"
-    echo "  dataset: $datasets"
+    echo "  dataset: all, $ALL_DATASETS"
     exit 1
 }
 
@@ -105,14 +107,16 @@ echo "Extracting files for dataset: $DATASET"
 
 case $DATASET in
     "all")
-        for extractor in "${extractors[@]}"; do
+        for dataset in $ALL_DATASETS; do
+            extractor=$(get_extractor "$dataset")
             $extractor &
         done
         wait
         ;;
     *)
-        if [[ -n "${extractors[$DATASET]}" ]]; then
-            ${extractors[$DATASET]}
+        extractor=$(get_extractor "$DATASET")
+        if [[ -n "$extractor" ]]; then
+            $extractor
         else
             echo "Error: Unknown dataset '$DATASET'"
             show_usage
