@@ -46,18 +46,6 @@ def main() -> None:
         print(f"Error: Model weights file not found: {args.model_weights_file}")
         sys.exit(1)
 
-    # Check if dataset files exist (check for .bin and .idx files)
-    bin_file = f"{args.dataset}.bin"
-    idx_file = f"{args.dataset}.idx"
-    if not (os.path.exists(bin_file) and os.path.exists(idx_file)):
-        print("Error: Dataset not found. Expected files:")
-        print(f"  {bin_file}")
-        print(f"  {idx_file}")
-        sys.exit(1)
-
-    print(f"Loading model weights from: {args.model_weights_file}")
-    print(f"Evaluating on dataset: {args.dataset}")
-
     # Initialize device and model
     device = get_device()
     model = Transformer().to(device)
