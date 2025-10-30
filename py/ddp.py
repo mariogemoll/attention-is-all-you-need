@@ -1,7 +1,9 @@
 import io
 import math
 import os
+import socket
 import time
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import torch
@@ -56,16 +58,34 @@ class DummyProgressBar:
         pass
 
 
+def find_free_port() -> int:
+    """Find a free port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        s.listen(1)
+        port: int = s.getsockname()[1]
+    return port
+
+
 def setup_ddp(rank: int, world_size: int, backend: str = "nccl") -> None:
     """Initialize the distributed process group."""
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
+    # Port should be set before spawning processes
+    if "MASTER_PORT" not in os.environ:
+        raise RuntimeError("MASTER_PORT must be set before calling setup_ddp")
 
-    # Initialize the process group
-    dist.init_process_group(backend, rank=rank, world_size=world_size)
+    print(f"Rank {rank}: Initializing process group on port {os.environ['MASTER_PORT']}")
+
+    # Initialize the process group with timeout
+    dist.init_process_group(
+        backend, rank=rank, world_size=world_size, timeout=timedelta(seconds=60)
+    )
+
+    print(f"Rank {rank}: Process group initialized successfully")
 
     # Set the GPU device for this process
     torch.cuda.set_device(rank)
+    print(f"Rank {rank}: Set CUDA device to {rank}")
 
 
 def launch_s3_upload_for_epoch(
@@ -371,14 +391,22 @@ def train_ddp_worker(
     print(f"Run ID: {run_id}")
     print(f"Log directory: {log_dir}")
 
+    print(f"Rank {rank}: Setting up TensorBoard writer...")
     writer: SummaryWriter | None = None
     if rank == 0:
         writer_log_dir = os.path.join(log_dir, "tensorboard")
+        print(f"Rank {rank}: Creating SummaryWriter at {writer_log_dir}")
         writer = SummaryWriter(log_dir=writer_log_dir)  # type: ignore[no-untyped-call]
+        print(f"Rank {rank}: SummaryWriter created")
+    else:
+        print(f"Rank {rank}: Skipping SummaryWriter (not rank 0)")
 
+    print(f"Rank {rank}: About to call setup_ddp()")
     # Setup DDP
     setup_ddp(rank, world_size)
+    print(f"Rank {rank}: setup_ddp() completed")
 
+    print(f"Rank {rank}: Setting torch configurations...")
     torch.autograd.set_detect_anomaly(False)
     torch.autograd.profiler.profile(False)  # type: ignore
     torch.autograd.profiler.emit_nvtx(False)  # type: ignore
@@ -393,22 +421,41 @@ def train_ddp_worker(
 
     try:
         # Create model
+        print(f"Rank {rank}: Creating DDP model...")
         model = create_ddp_model(rank)
+        print(f"Rank {rank}: DDP model created")
 
+        print(f"Rank {rank}: Compiling model...")
         model.compile(dynamic=True)  # type: ignore
+        print(f"Rank {rank}: Model compiled")
 
         training_config: list[float] = [0.0] * 6
         if rank == 0:
-            with open_buckets(train_dataset_path) as train_buckets:
-                epoch_batches_preview = EpochBatches(
-                    num_procs=world_size,
-                    proc_id=0,
-                    bucket_index_file=train_buckets.bucket_index_file,
-                    target_num_tokens_per_batch=target_num_tokens_per_batch,
-                    rng_seed=42,
-                    full_batches_only=True,
-                )
-                batches_per_epoch = len(epoch_batches_preview)
+            print(f"Rank {rank}: Opening buckets to calculate training schedule...")
+            try:
+                with open_buckets(train_dataset_path) as train_buckets:
+                    epoch_batches_preview = EpochBatches(
+                        num_procs=world_size,
+                        proc_id=0,
+                        bucket_index_file=train_buckets.bucket_index_file,
+                        target_num_tokens_per_batch=target_num_tokens_per_batch,
+                        rng_seed=42,
+                        full_batches_only=True,
+                    )
+                    batches_per_epoch = len(epoch_batches_preview)
+            except FileNotFoundError as e:
+                print(f"Rank {rank}: ERROR - {e}")
+                print(f"Rank {rank}: Please add training data")
+                # Abort the process group to avoid hanging other ranks
+                if dist.is_initialized():
+                    print(f"Rank {rank}: Aborting distributed process group due to error...")
+                    # Send sentinel values to unblock other ranks
+                    training_config = [-1.0] * 6  # Use -1 to signal error
+                    try:
+                        dist.broadcast_object_list(training_config, src=0)
+                    except Exception:
+                        pass  # If broadcast fails, that's ok
+                raise
 
             if batches_per_epoch <= 0:
                 raise RuntimeError(
@@ -449,8 +496,17 @@ def train_ddp_worker(
                 f"warmup_steps={warmup_steps}",
                 f"warmup_epochs≈{warmup_epochs}",
             )
+        else:
+            print(f"Rank {rank}: Waiting for training config from rank 0...")
 
         dist.broadcast_object_list(training_config, src=0)
+        print(f"Rank {rank}: Received training config: {training_config}")
+
+        # Check if rank 0 sent an error signal
+        if training_config[0] < 0:
+            print(f"Rank {rank}: Received error signal from rank 0, exiting...")
+            raise RuntimeError("Rank 0 encountered an error during initialization")
+
         batches_per_epoch, epochs_total, warmup_steps, total_steps, target_steps, warmup_epochs = [
             int(x) for x in training_config
         ]
@@ -458,10 +514,13 @@ def train_ddp_worker(
         if batches_per_epoch <= 0 or total_steps <= 0:
             raise RuntimeError("Invalid training schedule received from rank 0.")
 
-        base_lr = (target_num_tokens_per_batch / float(aiayn_tokens_per_step)) * 7e-4 * world_size
+        print(f"Rank {rank}: Creating optimizer and scheduler...")
+        # Match overfit_single_batch.py: base multiplier 1e-4, with linear scaling for world_size
+        base_lr = (target_num_tokens_per_batch / float(aiayn_tokens_per_step)) * 1e-4 * world_size
         optimizer = torch.optim.AdamW(model.parameters(), lr=base_lr)
         schedule_fn = cosine_lr(total_steps, warmup_steps)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=schedule_fn)
+        print(f"Rank {rank}: Optimizer and scheduler created")
         if rank == 0:
             print(f"Base learning rate set to {base_lr:.6f}")
             print(f"Warmup epochs: {warmup_epochs} (warmup steps: {warmup_steps})")
@@ -560,7 +619,31 @@ def train_ddp_worker(
 
         if writer is not None:
             writer.close()  # type: ignore[no-untyped-call]
-        cleanup_ddp()
+
+        # Only cleanup DDP if it was successfully initialized
+        if dist.is_initialized():
+            print(f"Rank {rank}: Cleaning up DDP...")
+            try:
+                # Use a separate thread with timeout for cleanup
+                import threading
+
+                def cleanup_thread() -> None:
+                    try:
+                        cleanup_ddp()
+                    except Exception as e:
+                        print(f"Rank {rank}: Exception during cleanup: {e}")
+
+                thread = threading.Thread(target=cleanup_thread)
+                thread.daemon = True  # Make it a daemon so it won't prevent exit
+                thread.start()
+                thread.join(timeout=5.0)  # Wait max 5 seconds
+
+                if thread.is_alive():
+                    print(f"Rank {rank}: DDP cleanup timed out after 5 seconds, forcing exit")
+                else:
+                    print(f"Rank {rank}: DDP cleanup complete")
+            except Exception as e:
+                print(f"Rank {rank}: Warning - DDP cleanup failed: {e}")
 
 
 def launch_ddp_training(
@@ -601,7 +684,10 @@ def launch_ddp_training(
         print("Warning: DDP requires at least 2 GPUs. Falling back to single GPU training.")
         return
 
-    print(f"Launching DDP training with {world_size} processes")
+    # Find a free port for this training run
+    free_port = find_free_port()
+    os.environ["MASTER_PORT"] = str(free_port)
+    print(f"Launching DDP training with {world_size} processes on port {free_port}")
 
     # Spawn training processes
     mp.spawn(  # type: ignore
