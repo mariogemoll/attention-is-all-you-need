@@ -7,15 +7,14 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from batching import EpochBatches
-from buckets import open_buckets
+from dataset import open_dataset
 from model import Transformer
 from params import (
     aiayn_tokens_per_step,
     log_base_path,
+    max_seq_len,
     pad,
     target_num_tokens_per_batch,
-    train_dataset_path,
 )
 from tensors import get_tensors
 from training import save_checkpoint
@@ -23,30 +22,39 @@ from util import get_device
 
 
 def load_single_batch(
+    dataset_path: str,
     device: torch.device,
-    rng_seed: int = 42,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Load the first batch for single-GPU training."""
-    with open_buckets(train_dataset_path) as buckets:
-        epoch_batches = EpochBatches(
-            num_procs=1,
-            proc_id=0,
-            bucket_index_file=buckets.bucket_index_file,
-            target_num_tokens_per_batch=target_num_tokens_per_batch,
-            rng_seed=rng_seed,
-            full_batches_only=True,
-        )
-        try:
-            batch_id, entry_ids = next(iter(epoch_batches))
-        except StopIteration as exc:
-            raise RuntimeError("No batches available for training") from exc
+    """
+    Load all entries from a single-batch dataset.
 
-        seq_len = (batch_id + 1) * buckets.step_size
+    Args:
+        dataset_path: Path to the single-batch dataset (without extension)
+        device: Device to load tensors to
+
+    Returns:
+        Tuple of (enc_input, dec_input, dec_target) tensors
+    """
+    with open_dataset(dataset_path) as dataset:
+        num_entries = dataset.num_entries
+        if num_entries == 0:
+            raise RuntimeError(f"No entries in dataset: {dataset_path}")
+
+        # Load all entries from the dataset
+        entry_ids = list(range(num_entries))
+
+        # Use max_seq_len from params as the sequence length
+        seq_len = max_seq_len
         enc_input, dec_input, dec_target = get_tensors(
             seq_len,
-            buckets.dataset,
+            dataset,
             entry_ids,
         )
+
+        print(f"Loaded single batch from {dataset_path}")
+        print(f"  Number of entries: {num_entries}")
+        print(f"  Sequence length: {seq_len}")
+        print(f"  Batch shape: {enc_input.shape}")
 
     return (
         enc_input.to(device, non_blocking=True),
@@ -62,8 +70,9 @@ def train_single_batch(
     writer: SummaryWriter | None,
     steps: int,
     device: torch.device,
+    dataset_path: str,
 ) -> float:
-    enc_input, dec_input, dec_target = load_single_batch(device)
+    enc_input, dec_input, dec_target = load_single_batch(dataset_path, device)
 
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=pad).to(device)
 
@@ -129,13 +138,14 @@ def train_single_batch(
     return avg_loss
 
 
-def run_single_batch_training(steps: int) -> None:
+def run_single_batch_training(steps: int, dataset_path: str) -> None:
     run_id = f"single_batch_{time.strftime('%Y%m%d_%H%M%S')}"
     log_dir = os.path.join(log_base_path, run_id)
     os.makedirs(log_dir, exist_ok=True)
 
     print(f"Starting single-batch training run {run_id}")
     print(f"Log directory: {log_dir}")
+    print(f"Dataset: {dataset_path}")
 
     writer = SummaryWriter(  # type: ignore[no-untyped-call]
         log_dir=os.path.join(log_dir, "tensorboard")
@@ -181,6 +191,7 @@ def run_single_batch_training(steps: int) -> None:
         writer=writer,
         steps=steps,
         device=device,
+        dataset_path=dataset_path,
     )
 
     checkpoint_dir = os.path.join("../5_checkpoints", run_id)
@@ -198,20 +209,28 @@ def run_single_batch_training(steps: int) -> None:
     writer.close()  # type: ignore[no-untyped-call]
 
 
-def launch_single_batch_training(steps: int = 200) -> None:
+def launch_single_batch_training(
+    steps: int = 200, dataset_path: str = "../4_tokens/single_batch"
+) -> None:
     if steps <= 0:
         raise ValueError("steps must be positive")
 
     print("Initializing single-batch training")
-    run_single_batch_training(steps)
+    run_single_batch_training(steps, dataset_path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Single-batch overfitting test")
     parser.add_argument("--steps", type=int, default=2000, help="Optimizer steps to run")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="../4_tokens/single_batch",
+        help="Path to single-batch dataset (without extension). Default: ../4_tokens/single_batch",
+    )
     args = parser.parse_args()
 
-    launch_single_batch_training(steps=args.steps)
+    launch_single_batch_training(steps=args.steps, dataset_path=args.dataset)
 
 
 if __name__ == "__main__":
