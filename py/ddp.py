@@ -615,4 +615,4 @@ def launch_ddp_training(
 # Example usage
 if __name__ == "__main__":
     # Launch DDP training with dummy data
-    launch_ddp_training(world_size=2, enable_s3=False)
+    launch_ddp_training()
