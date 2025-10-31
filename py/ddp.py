@@ -26,6 +26,7 @@ from params import (
     aiayn_tokens_per_step,
     aiayn_warmup_steps,
     checkpoints_to_keep,
+    gradient_clip_norm,
     log_base_path,
     pad,
     target_num_processed_tokens,
@@ -303,8 +304,8 @@ def train_one_epoch(
         optimizer.zero_grad()
         loss.backward()
 
-        # Compute gradient norm
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"))
+        # Compute gradient norm and clip gradients
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
 
         optimizer.step()
         if scheduler is not None:

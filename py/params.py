@@ -27,3 +27,6 @@ train_dataset_path = "../4_tokens/train"
 aiayn_tokens_per_step = 25_000
 aiayn_warmup_steps = 4_000
 target_num_processed_tokens = 100000 * aiayn_tokens_per_step
+
+# Gradient clipping
+gradient_clip_norm = 1.0
