@@ -521,8 +521,8 @@ def train_ddp_worker(
             raise RuntimeError("Invalid training schedule received from rank 0.")
 
         print(f"Rank {rank}: Creating optimizer and scheduler...")
-        # Match overfit_single_batch.py: base multiplier 1e-4, with linear scaling for world_size
-        base_lr = (target_num_tokens_per_batch / float(aiayn_tokens_per_step)) * 1e-4 * world_size
+        # Magic Karpathy learning rate
+        base_lr = 3e-4
         optimizer = torch.optim.AdamW(model.parameters(), lr=base_lr)
         schedule_fn = cosine_lr(total_steps, warmup_steps)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=schedule_fn)
