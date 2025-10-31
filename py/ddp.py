@@ -21,6 +21,7 @@ from batching import EpochBatches
 from buckets import open_buckets
 from lr_schedules import cosine_lr
 from model import Transformer
+from model_utils import print_model_parameters
 from params import (
     aiayn_tokens_per_step,
     aiayn_warmup_steps,
@@ -148,6 +149,11 @@ def cleanup_ddp() -> None:
 def create_ddp_model(rank: int) -> DDP:
     """Create and wrap model with DDP."""
     model = Transformer()
+
+    # Print parameters on rank 0 only
+    if rank == 0:
+        print_model_parameters(model)
+
     model = model.to(rank)  # Move model to the specific GPU
 
     # Wrap model with DDP
