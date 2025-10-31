@@ -596,54 +596,38 @@ def train_ddp_worker(
                 cleanup_processes.append((cleanup_process, f"cleanup after epoch {epoch}"))
 
     finally:
-        if rank == 0:
-
-            def _wait_for_processes(label: str, processes: list[tuple[mp.Process, str]]) -> None:
-                if not processes:
-                    return
-                alive = [item for item in processes if item[0].is_alive()]
-                if alive:
-                    print(f"Rank 0 waiting for {len(alive)} {label} process(es) to complete...")
-                    for process, description in alive:
-                        print(f"  PID {process.pid}: {description}")
-                        process.join()
-                for process, _ in processes:
-                    if process.is_alive():
-                        process.join()
-                if alive:
-                    print(f"Rank 0: {label} completed.")
-
-            if enable_s3:
-                _wait_for_processes("S3 upload", s3_upload_processes)
-            _wait_for_processes("checkpoint cleanup", cleanup_processes)
-
         if writer is not None:
             writer.close()  # type: ignore[no-untyped-call]
 
-        # Only cleanup DDP if it was successfully initialized
+        # Report status of background processes but don't wait for them
+        # S3 uploads and cleanup will continue in the background
+        if rank == 0:
+            if enable_s3:
+                alive_s3 = [item for item in s3_upload_processes if item[0].is_alive()]
+                if alive_s3:
+                    print(f"Rank 0: {len(alive_s3)} S3 upload process(es) still running:")
+                    for process, description in alive_s3:
+                        print(f"  PID {process.pid}: {description}")
+
+            alive_cleanup = [item for item in cleanup_processes if item[0].is_alive()]
+            if alive_cleanup:
+                print(
+                    f"Rank 0: {len(alive_cleanup)} cleanup process(es) still running in background:"
+                )
+                for process, description in alive_cleanup:
+                    print(f"  PID {process.pid}: {description}")
+
+        # Synchronize all ranks before exit to ensure all training is complete
+        # Background processes (S3 uploads, cleanup) will continue independently
         if dist.is_initialized():
-            print(f"Rank {rank}: Cleaning up DDP...")
+            print(f"Rank {rank}: Synchronizing with other ranks before exit...")
             try:
-                # Use a separate thread with timeout for cleanup
-                import threading
-
-                def cleanup_thread() -> None:
-                    try:
-                        cleanup_ddp()
-                    except Exception as e:
-                        print(f"Rank {rank}: Exception during cleanup: {e}")
-
-                thread = threading.Thread(target=cleanup_thread)
-                thread.daemon = True  # Make it a daemon so it won't prevent exit
-                thread.start()
-                thread.join(timeout=5.0)  # Wait max 5 seconds
-
-                if thread.is_alive():
-                    print(f"Rank {rank}: DDP cleanup timed out after 5 seconds, forcing exit")
-                else:
-                    print(f"Rank {rank}: DDP cleanup complete")
+                dist.barrier(device_ids=[rank])
+                print(f"Rank {rank}: All ranks synchronized, training complete")
             except Exception as e:
-                print(f"Rank {rank}: Warning - DDP cleanup failed: {e}")
+                print(f"Rank {rank}: Barrier failed (another rank may have crashed): {e}")
+
+        print(f"Rank {rank}: Training completed successfully, exiting...")
 
 
 def launch_ddp_training(
