@@ -117,6 +117,12 @@ def main() -> None:
             print(f"[{i}/{len(model_files)}] {model_name}")
 
             try:
+                # Extract epoch number from filename
+                match = re.search(r"(\d+)", model_name)
+                if not match:
+                    raise ValueError(f"Could not extract epoch number from filename: {model_name}")
+                epoch = int(match.group(1))
+
                 # Load model
                 model = Transformer().to(device)
                 model_state_dict = torch.load(model_path, map_location=device)
@@ -130,7 +136,7 @@ def main() -> None:
                         model=model,
                         criterion=criterion,
                         writer=writer,
-                        epoch=0,
+                        epoch=epoch,
                     )
 
                 results.append((model_name, val_loss))
