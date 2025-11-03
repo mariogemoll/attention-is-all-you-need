@@ -218,12 +218,16 @@ def translate_dataset(
                         log_probs = F.log_softmax(logits, dim=0)
                         top_log_probs, top_indices = torch.topk(log_probs, beam_size)
 
+                        # Convert to CPU numpy arrays once for all beam_size values
+                        top_indices_cpu = top_indices.cpu().numpy()
+                        top_log_probs_cpu = top_log_probs.cpu().numpy()
+
                         expanded = False
-                        for j in range(top_indices.shape[0]):
-                            token = int(top_indices[j].item())
+                        for j in range(beam_size):
+                            token = int(top_indices_cpu[j])
                             if token == pad:
                                 continue
-                            token_log_prob = float(top_log_probs[j].item())
+                            token_log_prob = float(top_log_probs_cpu[j])
                             new_tokens = list(beam_state.tokens)
                             ended = False
                             if token == eos:
