@@ -20,8 +20,11 @@ jobs:
         working-directory: py
         run: >-
           pip install "torch>=2,<3" --index-url https://download.pytorch.org/whl/cpu
-      - name: Install Node.js dependencies
+      - name: Install notebook checker
         working-directory: js
+        run: npm install
+      - name: Install TypeScript dependencies
+        working-directory: ts
         run: npm install
       - name: Run checks
         working-directory: sh
@@ -29,3 +32,6 @@ jobs:
       - name: Run Python tests
         working-directory: py
         run: pytest
+      - name: Build widget demo
+        working-directory: ts
+        run: npm run build:demo

@@ -13,6 +13,11 @@ for notebook in ../py/*.ipynb; do
     npx check-notebook "$notebook" 
 done
 
+cd $SCRIPT_DIR/../ts
+npx eslint -c basic.eslint.config.js basic.eslint.config.js eslint.config.js
+npx eslint src
+npx tsc
+
 cd $SCRIPT_DIR/../py
 
 flake8 --show-source *.py
