@@ -1,8 +1,6 @@
 {
   "type": "module",
   "devDependencies": {
-    "eslint": "^9.32.0",
-    "eslint-plugin-simple-import-sort": "^12.1.1",
-    "markdownlint": "^0.38.0"
+    "notebook-checker": "github:mariogemoll/check-notebook#8846de19d1f1d2a2f92fbb662f218cbe1b110e90"
   }
 }

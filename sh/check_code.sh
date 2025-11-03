@@ -9,9 +9,8 @@ set -x
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 cd $SCRIPT_DIR/../js
-npx eslint
 for notebook in ../py/*.ipynb; do
-    node check_notebook_json.js "$notebook" 
+    npx check-notebook "$notebook" 
 done
 
 cd $SCRIPT_DIR/../py
