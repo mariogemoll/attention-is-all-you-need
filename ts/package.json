@@ -1,0 +1,15 @@
+{
+  "name": "attention-is-all-you-need",
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "web-ui-common": "mariogemoll/web-ui-common#444885a9ba2404e1c44588bbb201ccf08e74e3a3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.11",
+    "eslint": "^9.39.0",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2"
+  }
+}
