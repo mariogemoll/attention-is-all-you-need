@@ -14,6 +14,7 @@ num_epochs = 10
 seq_len_step_size = 16
 
 target_num_tokens_per_batch = 20000
+inference_target_num_tokens_per_batch = 60000
 
 log_base_path = "../logs"
 

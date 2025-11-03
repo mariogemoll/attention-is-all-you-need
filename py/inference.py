@@ -11,7 +11,7 @@ from buckets import open_buckets
 from data import to_uint16_le_bytes
 from indexed_sequential import append_indexed_entry
 from model import Transformer
-from params import eos, pad, sos, target_num_tokens_per_batch
+from params import eos, inference_target_num_tokens_per_batch, pad, sos
 
 
 @dataclass
@@ -106,7 +106,7 @@ def translate_dataset(
         for bucket_idx in range(dataset.num_buckets):
             bucket_entries = BucketEntries(dataset, bucket_id=bucket_idx)
             seq_len = (bucket_idx + 1) * dataset.step_size
-            num_rows = target_num_tokens_per_batch // seq_len
+            num_rows = inference_target_num_tokens_per_batch // seq_len
             # Make it a multiple of 16
             num_rows = (num_rows // 16) * 16
 
@@ -153,16 +153,24 @@ def translate_dataset(
                     continue
 
                 beam_entries: List[Tuple[int, int, BeamState]] = []
-                enc_input_padded: List[List[int]] = []
-                memory_tensors: List[torch.Tensor] = []
-                dec_input_padded: List[List[int]] = []
                 sequence_candidates: Dict[int, List[BeamState]] = {
                     line_number: [] for line_number in batch.keys()
                 }
 
+                # Pre-allocate tensors filled with padding
+                enc_input_padded: List[List[int]] = [[pad] * seq_len for _ in range(num_rows)]
+                dec_input_padded: List[List[int]] = [[pad] * seq_len for _ in range(num_rows)]
+                memory_tensors: List[torch.Tensor] = []
+
+                # Collect active beam entries up to num_rows
+                entry_idx = 0
                 for line_number, info in batch.items():
+                    if entry_idx >= num_rows:
+                        break
                     padded_src = info.src_tokens + [pad] * (seq_len - len(info.src_tokens))
                     for beam_idx, beam_state in enumerate(info.beams):
+                        if entry_idx >= num_rows:
+                            break
                         if beam_state.ended:
                             sequence_candidates[line_number].append(beam_state)
                             continue
@@ -171,10 +179,25 @@ def translate_dataset(
                             sequence_candidates[line_number].append(beam_state)
                             continue
                         beam_entries.append((line_number, beam_idx, beam_state))
-                        enc_input_padded.append(padded_src)
+                        enc_input_padded[entry_idx] = padded_src
                         memory_tensors.append(info.src_encoding)
                         padded_tgt = beam_state.tokens + [pad] * (seq_len - len(beam_state.tokens))
-                        dec_input_padded.append(padded_tgt)
+                        dec_input_padded[entry_idx] = padded_tgt
+                        entry_idx += 1
+
+                # Fill remaining memory tensors with dummy values if needed
+                if beam_entries:
+                    num_active = len(beam_entries)
+                    # Round up to nearest multiple of 16
+                    effective_batch_size = ((num_active + 15) // 16) * 16
+
+                    # Resize tensors to effective_batch_size
+                    enc_input_padded = enc_input_padded[:effective_batch_size]
+                    dec_input_padded = dec_input_padded[:effective_batch_size]
+
+                    dummy_memory = memory_tensors[0]
+                    while len(memory_tensors) < effective_batch_size:
+                        memory_tensors.append(dummy_memory)
 
                 if beam_entries:
                     enc_input_tensor = torch.tensor(
