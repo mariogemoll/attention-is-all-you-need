@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "build:demo": "esbuild src/page.ts --bundle --outfile=demo/page.js"
+    "build:demo": "esbuild src/demo.ts --bundle --outfile=demo/demo.js"
   },
   "dependencies": {
     "web-ui-common": "mariogemoll/web-ui-common#444885a9ba2404e1c44588bbb201ccf08e74e3a3"
