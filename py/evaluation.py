@@ -26,13 +26,13 @@ def evaluate(
         valset.bucket_index_file,
         target_num_tokens_per_batch,
         rng_seed=42,
-        full_batches_only=True,
+        full_batches_only=False,
     )
     with torch.no_grad():
         losses = torch.zeros(len(val_batches))
         iterator = tqdm(val_batches, desc=f"Evaluating Epoch {epoch}") if use_tqdm else val_batches
-        for i, (batch_id, entry_ids) in enumerate(iterator):
-            seq_len = (batch_id + 1) * valset.step_size
+        for i, (bucket_id, entry_ids) in enumerate(iterator):
+            seq_len = (bucket_id + 1) * valset.step_size
             enc_input, dec_input, dec_target = get_tensors(seq_len, valset.dataset, entry_ids)
             enc_input = enc_input.to(device)
             dec_input = dec_input.to(device)
