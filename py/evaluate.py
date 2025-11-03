@@ -16,9 +16,9 @@ from torch.nn import CrossEntropyLoss
 from torch.utils.tensorboard import SummaryWriter
 
 from buckets import open_buckets
+from evaluation import evaluate
 from model import Transformer
 from params import pad
-from training import evaluate
 from util import get_device
 
 

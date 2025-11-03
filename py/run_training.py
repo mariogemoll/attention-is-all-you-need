@@ -3,8 +3,9 @@ import torch.multiprocessing as mp
 
 from batch_producer import DataQueueMessage, batch_producer
 from buckets import open_buckets
+from evaluation import evaluate
 from params import checkpoints_to_keep, target_num_tokens_per_batch
-from training import clean_up_old_checkpoints, evaluate, init, save_checkpoint, train_one_epoch
+from training import clean_up_old_checkpoints, init, save_checkpoint, train_one_epoch
 
 
 def main() -> None:
