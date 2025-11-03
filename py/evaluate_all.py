@@ -19,6 +19,7 @@ from typing import List, Tuple
 import torch
 from torch.nn import CrossEntropyLoss
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 from buckets import open_buckets
 from evaluation import evaluate
@@ -112,9 +113,10 @@ def main() -> None:
 
     # Evaluate each model
     try:
-        for i, model_path in enumerate(model_files, 1):
+        pbar = tqdm(model_files, desc="Evaluating models")
+        for i, model_path in enumerate(pbar, 1):
             model_name = os.path.basename(model_path)
-            print(f"[{i}/{len(model_files)}] {model_name}")
+            pbar.set_description(f"Evaluating: {model_name}")
 
             try:
                 # Extract epoch number from filename
@@ -140,11 +142,12 @@ def main() -> None:
                     )
 
                 results.append((model_name, val_loss))
-                print(f"    Loss: {val_loss:.6f}")
+                pbar.set_postfix({"loss": f"{val_loss:.6f}"})
 
             except Exception as e:
-                print(f"    ERROR: {e}")
+                tqdm.write(f"    ERROR: {e}")
                 results.append((model_name, float("inf")))
+                pbar.set_postfix({"error": str(e)[:30]})
                 continue
 
     except KeyboardInterrupt:
