@@ -1,7 +1,7 @@
 import { el } from 'web-ui-common/dom';
 
 import { convertToLossData, loadBinaryFloats, loadMultipleLossData } from './data-loader';
-import { initLossWidget } from './loss';
+import { initLineChart } from './line-chart';
 
 // Get the canvas elements
 const canvas = el(document, '#canvas') as HTMLCanvasElement;
@@ -25,8 +25,8 @@ async function initDemo(): Promise<void> {
       './training_run_2.loss.bin'
     ]);
 
-    // Initialize the loss widget with multiple datasets
-    initLossWidget(canvas, lossDataSets, {
+    // Initialize the line chart with multiple datasets
+    initLineChart(canvas, lossDataSets, {
       labels: ['Run 1', 'Run 2']
     });
 
@@ -34,8 +34,8 @@ async function initDemo(): Promise<void> {
     const epochTrainLoss = await loadBinaryFloats('./epoch_train.loss.bin');
     const epochValLoss = await loadBinaryFloats('./epoch_val.loss.bin');
 
-    // Initialize the epoch loss widget (no smoothing for epoch data)
-    initLossWidget(
+    // Initialize the epoch line chart (no smoothing for epoch data)
+    initLineChart(
       epochCanvas,
       [convertToLossData(epochTrainLoss), convertToLossData(epochValLoss)],
       { labels: ['Train', 'Val'], smooth: false }

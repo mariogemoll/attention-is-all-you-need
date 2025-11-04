@@ -6,7 +6,7 @@ import { exponentialMovingAverage } from './stats';
 
 const colors = ['steelblue', 'coral', 'mediumseagreen', 'mediumpurple', 'tomato'];
 
-export interface LossWidgetOptions {
+export interface LineChartOptions {
   /** Labels for each dataset (for legend) */
   labels?: string[];
   /** Whether to apply smoothing (default: true) */
@@ -16,18 +16,18 @@ export interface LossWidgetOptions {
 }
 
 /**
- * Initialize a loss curve widget on a canvas
+ * Initialize a line chart on a canvas
  * @param canvas - Canvas element to render on
- * @param lossDataSets - Array of loss data arrays, each containing [step, loss] pairs
+ * @param dataSets - Array of data arrays, each containing [x, y] pairs
  * @param options - Optional configuration
  */
-export function initLossWidget(
+export function initLineChart(
   canvas: HTMLCanvasElement,
-  lossDataSets: Pair<number>[][],
-  options: LossWidgetOptions = {}
+  dataSets: Pair<number>[][],
+  options: LineChartOptions = {}
 ): void {
   const { labels, smooth = true, alpha = 0.1 } = options;
-  if (lossDataSets.length === 0 || lossDataSets.every(data => data.length === 0)) {
+  if (dataSets.length === 0 || dataSets.every(data => data.length === 0)) {
     return;
   }
 
@@ -37,55 +37,55 @@ export function initLossWidget(
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   // Calculate global data ranges across all datasets
-  let minStep = Infinity;
-  let maxStep = -Infinity;
-  let minLoss = Infinity;
-  let maxLoss = -Infinity;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
 
-  for (const lossData of lossDataSets) {
-    const steps = lossData.map(([step]) => step);
-    const losses = lossData.map(([, loss]) => loss);
+  for (const data of dataSets) {
+    const xValues = data.map(([x]) => x);
+    const yValues = data.map(([, y]) => y);
 
-    minStep = Math.min(minStep, ...steps);
-    maxStep = Math.max(maxStep, ...steps);
-    minLoss = Math.min(minLoss, ...losses);
-    maxLoss = Math.max(maxLoss, ...losses);
+    minX = Math.min(minX, ...xValues);
+    maxX = Math.max(maxX, ...xValues);
+    minY = Math.min(minY, ...yValues);
+    maxY = Math.max(maxY, ...yValues);
   }
 
   // Add some padding to the ranges
-  const stepRange: Pair<number> = [minStep, maxStep];
-  const lossRange: Pair<number> = [
-    minLoss - (maxLoss - minLoss) * 0.1,
-    maxLoss + (maxLoss - minLoss) * 0.1
+  const xRange: Pair<number> = [minX, maxX];
+  const yRange: Pair<number> = [
+    minY - (maxY - minY) * 0.1,
+    maxY + (maxY - minY) * 0.1
   ];
 
   // Create scales
   const xScale = makeScale(
-    stepRange,
+    xRange,
     [defaultMargins.left, canvas.width - defaultMargins.right]
   );
 
   const yScale = makeScale(
-    lossRange,
+    yRange,
     [canvas.height - defaultMargins.bottom, defaultMargins.top]
   );
 
   // Draw frame with axes
-  addFrame(canvas, defaultMargins, stepRange, lossRange, 6);
+  addFrame(canvas, defaultMargins, xRange, yRange, 6);
 
-  // Draw each loss curve
-  lossDataSets.forEach((lossData, index) => {
+  // Draw each curve
+  dataSets.forEach((data, index) => {
     const color = colors[index % colors.length] ?? 'steelblue';
-    const steps = lossData.map(([step]) => step);
-    const losses = lossData.map(([, loss]) => loss);
+    const xValues = data.map(([x]) => x);
+    const yValues = data.map(([, y]) => y);
 
     // Apply smoothing if enabled
     let dataToPlot: Pair<number>[];
     if (smooth) {
-      const smoothedLosses = exponentialMovingAverage(losses, alpha);
-      dataToPlot = steps.map((step, i) => [step, smoothedLosses[i]]);
+      const smoothedY = exponentialMovingAverage(yValues, alpha);
+      dataToPlot = xValues.map((x, i) => [x, smoothedY[i]]);
     } else {
-      dataToPlot = lossData;
+      dataToPlot = data;
     }
 
     drawLine(ctx, xScale, yScale, dataToPlot, {
