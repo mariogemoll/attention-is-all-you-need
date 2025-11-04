@@ -2,6 +2,7 @@ import { el } from 'web-ui-common/dom';
 
 import { convertToLossData, loadBinaryFloats, loadMultipleLossData } from './data-loader';
 import { initLineChart } from './line-chart';
+import { smoothData } from './stats';
 
 // Get the canvas elements
 const canvas = el(document, '#canvas') as HTMLCanvasElement;
@@ -25,8 +26,9 @@ async function initDemo(): Promise<void> {
       './training_run_2.loss.bin'
     ]);
 
-    // Initialize the line chart with multiple datasets
-    initLineChart(canvas, lossDataSets, {
+    // Smooth the step-level data and display
+    const smoothedDataSets = lossDataSets.map(data => smoothData(data, 0.1));
+    initLineChart(canvas, smoothedDataSets, {
       labels: ['Run 1', 'Run 2']
     });
 
@@ -34,11 +36,11 @@ async function initDemo(): Promise<void> {
     const epochTrainLoss = await loadBinaryFloats('./epoch_train.loss.bin');
     const epochValLoss = await loadBinaryFloats('./epoch_val.loss.bin');
 
-    // Initialize the epoch line chart (no smoothing for epoch data)
+    // Display epoch data without smoothing
     initLineChart(
       epochCanvas,
       [convertToLossData(epochTrainLoss), convertToLossData(epochValLoss)],
-      { labels: ['Train', 'Val'], smooth: false }
+      { labels: ['Train', 'Val'] }
     );
   } catch (error) {
     console.error('Failed to load loss data:', error);

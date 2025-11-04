@@ -2,17 +2,11 @@ import { addFrame, defaultMargins, drawLine, getContext } from 'web-ui-common/ca
 import type { Pair } from 'web-ui-common/types';
 import { makeScale } from 'web-ui-common/util';
 
-import { exponentialMovingAverage } from './stats';
-
 const colors = ['steelblue', 'coral', 'mediumseagreen', 'mediumpurple', 'tomato'];
 
 export interface LineChartOptions {
   /** Labels for each dataset (for legend) */
   labels?: string[];
-  /** Whether to apply smoothing (default: true) */
-  smooth?: boolean;
-  /** Smoothing factor (default: 0.1) */
-  alpha?: number;
 }
 
 /**
@@ -26,7 +20,7 @@ export function initLineChart(
   dataSets: Pair<number>[][],
   options: LineChartOptions = {}
 ): void {
-  const { labels, smooth = true, alpha = 0.1 } = options;
+  const { labels } = options;
   if (dataSets.length === 0 || dataSets.every(data => data.length === 0)) {
     return;
   }
@@ -76,19 +70,8 @@ export function initLineChart(
   // Draw each curve
   dataSets.forEach((data, index) => {
     const color = colors[index % colors.length] ?? 'steelblue';
-    const xValues = data.map(([x]) => x);
-    const yValues = data.map(([, y]) => y);
 
-    // Apply smoothing if enabled
-    let dataToPlot: Pair<number>[];
-    if (smooth) {
-      const smoothedY = exponentialMovingAverage(yValues, alpha);
-      dataToPlot = xValues.map((x, i) => [x, smoothedY[i]]);
-    } else {
-      dataToPlot = data;
-    }
-
-    drawLine(ctx, xScale, yScale, dataToPlot, {
+    drawLine(ctx, xScale, yScale, data, {
       stroke: color,
       lineWidth: 2
     });
