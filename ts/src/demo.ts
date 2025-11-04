@@ -1,10 +1,11 @@
 import { el } from 'web-ui-common/dom';
 
-import { loadMultipleLossData } from './data-loader';
+import { convertToLossData, loadBinaryFloats, loadMultipleLossData } from './data-loader';
 import { initLossWidget } from './loss';
 
-// Get the canvas element
+// Get the canvas elements
 const canvas = el(document, '#canvas') as HTMLCanvasElement;
+const epochCanvas = el(document, '#epoch-canvas') as HTMLCanvasElement;
 
 // Load and display the loss data
 async function initDemo(): Promise<void> {
@@ -25,7 +26,20 @@ async function initDemo(): Promise<void> {
     ]);
 
     // Initialize the loss widget with multiple datasets
-    initLossWidget(canvas, lossDataSets);
+    initLossWidget(canvas, lossDataSets, {
+      labels: ['Run 1', 'Run 2']
+    });
+
+    // Load epoch-level loss data
+    const epochTrainLoss = await loadBinaryFloats('./epoch_train.loss.bin');
+    const epochValLoss = await loadBinaryFloats('./epoch_val.loss.bin');
+
+    // Initialize the epoch loss widget (no smoothing for epoch data)
+    initLossWidget(
+      epochCanvas,
+      [convertToLossData(epochTrainLoss), convertToLossData(epochValLoss)],
+      { labels: ['Train', 'Val'], smooth: false }
+    );
   } catch (error) {
     console.error('Failed to load loss data:', error);
 

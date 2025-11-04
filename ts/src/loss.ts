@@ -6,15 +6,27 @@ import { exponentialMovingAverage } from './stats';
 
 const colors = ['steelblue', 'coral', 'mediumseagreen', 'mediumpurple', 'tomato'];
 
+export interface LossWidgetOptions {
+  /** Labels for each dataset (for legend) */
+  labels?: string[];
+  /** Whether to apply smoothing (default: true) */
+  smooth?: boolean;
+  /** Smoothing factor (default: 0.1) */
+  alpha?: number;
+}
+
 /**
  * Initialize a loss curve widget on a canvas
  * @param canvas - Canvas element to render on
  * @param lossDataSets - Array of loss data arrays, each containing [step, loss] pairs
+ * @param options - Optional configuration
  */
 export function initLossWidget(
   canvas: HTMLCanvasElement,
-  lossDataSets: Pair<number>[][]
+  lossDataSets: Pair<number>[][],
+  options: LossWidgetOptions = {}
 ): void {
+  const { labels, smooth = true, alpha = 0.1 } = options;
   if (lossDataSets.length === 0 || lossDataSets.every(data => data.length === 0)) {
     return;
   }
@@ -67,16 +79,37 @@ export function initLossWidget(
     const steps = lossData.map(([step]) => step);
     const losses = lossData.map(([, loss]) => loss);
 
-    // Compute and draw smoothed loss curve
-    const smoothedLosses = exponentialMovingAverage(losses, 0.1);
-    const smoothedData: Pair<number>[] = steps.map((step, i) => [
-      step,
-      smoothedLosses[i]
-    ]);
+    // Apply smoothing if enabled
+    let dataToPlot: Pair<number>[];
+    if (smooth) {
+      const smoothedLosses = exponentialMovingAverage(losses, alpha);
+      dataToPlot = steps.map((step, i) => [step, smoothedLosses[i]]);
+    } else {
+      dataToPlot = lossData;
+    }
 
-    drawLine(ctx, xScale, yScale, smoothedData, {
+    drawLine(ctx, xScale, yScale, dataToPlot, {
       stroke: color,
       lineWidth: 2
     });
   });
+
+  // Draw legend if labels are provided
+  if (labels && labels.length > 0) {
+    const legendX = canvas.width - defaultMargins.right - 100;
+    const legendY = defaultMargins.top + 20;
+
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'left';
+
+    labels.forEach((label, index) => {
+      const color = colors[index % colors.length] ?? 'steelblue';
+      const y = legendY + index * 20;
+
+      ctx.fillStyle = color;
+      ctx.fillRect(legendX, y - 8, 20, 3);
+      ctx.fillStyle = '#333';
+      ctx.fillText(label, legendX + 25, y);
+    });
+  }
 }
