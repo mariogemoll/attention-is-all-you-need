@@ -92,6 +92,7 @@ def translate_dataset(
     input_path_prefix: str,
     output_path_prefix: str,
     beam_size: int = 4,
+    length_penalty: float = 0.6,
     show_progress: bool = True,
 ) -> None:
     if beam_size < 1:
@@ -258,7 +259,11 @@ def translate_dataset(
                     if not candidates:
                         candidates = info.beams
 
-                    candidates.sort(key=lambda beam: beam.log_prob, reverse=True)
+                    # Apply length penalty: score / (length ** alpha)
+                    candidates.sort(
+                        key=lambda beam: beam.log_prob / (len(beam.tokens) ** length_penalty),
+                        reverse=True,
+                    )
                     info.beams = candidates[:beam_size]
 
                     if all(beam.ended for beam in info.beams):
@@ -285,7 +290,9 @@ def translate_dataset(
         # We're done with all the buckets. If we still have spillover sequences (or active ones),
         # store the tokens we have generated for those.
         for line_number, info in {**spillover_sequences, **sequences}.items():
-            best_beam = max(info.beams, key=lambda beam: beam.log_prob)
+            best_beam = max(
+                info.beams, key=lambda beam: beam.log_prob / (len(beam.tokens) ** length_penalty)
+            )
             completed_sequences[line_number] = best_beam.tokens[1:]
 
     # Write all completed sequences to files in order
