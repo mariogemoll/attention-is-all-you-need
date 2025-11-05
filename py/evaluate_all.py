@@ -14,7 +14,7 @@ import glob
 import os
 import re
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 from torch.nn import CrossEntropyLoss
@@ -56,6 +56,62 @@ def find_model_files(directory: str, pattern: str = "model_*.pt") -> List[str]:
         return int(match.group(1)) if match else 0
 
     return sorted(model_files, key=extract_epoch_number)
+
+
+def evaluate_single_model(
+    model_path: str,
+    writer: SummaryWriter,
+    dataset_path: str = "../4_tokens/newstest2013",
+    device: Optional[torch.device] = None,
+) -> Tuple[str, float]:
+    """
+    Evaluate a single model and return the result.
+
+    Args:
+        model_path: Path to the model file
+        writer: TensorBoard writer for logging
+        dataset_path: Path to the validation dataset
+        device: PyTorch device to use (defaults to auto-detect)
+
+    Returns:
+        Tuple of (model_name, validation_loss)
+    """
+    if device is None:
+        device = get_device()
+
+    model_name = os.path.basename(model_path)
+
+    try:
+        # Extract epoch number from filename
+        match = re.search(r"(\d+)", model_name)
+        if not match:
+            raise ValueError(f"Could not extract epoch number from filename: {model_name}")
+        epoch = int(match.group(1))
+
+        # Load model
+        model = Transformer().to(device)
+        model_state_dict = torch.load(model_path, map_location=device)
+        model.load_state_dict(model_state_dict)
+
+        # Initialize loss criterion
+        criterion = CrossEntropyLoss(ignore_index=pad)
+
+        # Evaluate
+        with open_buckets(dataset_path) as valset:
+            val_loss = evaluate(
+                device=device,
+                valset=valset,
+                model=model,
+                criterion=criterion,
+                writer=writer,
+                epoch=epoch,
+            )
+
+        return (model_name, val_loss)
+
+    except Exception as e:
+        print(f"Error evaluating {model_name}: {e}")
+        return (model_name, float("inf"))
 
 
 def main() -> None:
@@ -108,47 +164,22 @@ def main() -> None:
     # Store results
     results: List[Tuple[str, float]] = []
 
-    # Initialize loss criterion
-    criterion = CrossEntropyLoss(ignore_index=pad)
-
     # Evaluate each model
     try:
         pbar = tqdm(model_files, desc="Evaluating models")
-        for i, model_path in enumerate(pbar, 1):
+        for model_path in pbar:
             model_name = os.path.basename(model_path)
             pbar.set_description(f"Evaluating: {model_name}")
 
-            try:
-                # Extract epoch number from filename
-                match = re.search(r"(\d+)", model_name)
-                if not match:
-                    raise ValueError(f"Could not extract epoch number from filename: {model_name}")
-                epoch = int(match.group(1))
+            model_name, val_loss = evaluate_single_model(
+                model_path=model_path, writer=writer, dataset_path=args.dataset, device=device
+            )
 
-                # Load model
-                model = Transformer().to(device)
-                model_state_dict = torch.load(model_path, map_location=device)
-                model.load_state_dict(model_state_dict)
-
-                # Evaluate
-                with open_buckets(args.dataset) as valset:
-                    val_loss = evaluate(
-                        device=device,
-                        valset=valset,
-                        model=model,
-                        criterion=criterion,
-                        writer=writer,
-                        epoch=epoch,
-                    )
-
-                results.append((model_name, val_loss))
+            results.append((model_name, val_loss))
+            if val_loss != float("inf"):
                 pbar.set_postfix({"loss": f"{val_loss:.6f}"})
-
-            except Exception as e:
-                tqdm.write(f"    ERROR: {e}")
-                results.append((model_name, float("inf")))
-                pbar.set_postfix({"error": str(e)[:30]})
-                continue
+            else:
+                pbar.set_postfix({"error": "Failed"})
 
     except KeyboardInterrupt:
         print("\n\nEvaluation interrupted by user")
