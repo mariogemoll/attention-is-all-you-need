@@ -92,6 +92,7 @@ def translate_dataset(
     input_path_prefix: str,
     output_path_prefix: str,
     beam_size: int = 4,
+    show_progress: bool = True,
 ) -> None:
     if beam_size < 1:
         raise ValueError("beam_size must be at least 1")
@@ -113,9 +114,13 @@ def translate_dataset(
             num_sequences_completed = 0
             bucket_iterator = iter(bucket_entries)
 
-            pbar = tqdm(
-                total=len(bucket_entries) + len(spillover_sequences), desc=f"Bucket {bucket_idx}"
-            )
+            if show_progress:
+                pbar = tqdm(
+                    total=len(bucket_entries) + len(spillover_sequences),
+                    desc=f"Bucket {bucket_idx}",
+                )
+            else:
+                pbar = None
 
             # Start with the spillover sequences from the last bucket. Recalculate the encoding
             # tensors so that they have the correct width
@@ -148,7 +153,8 @@ def translate_dataset(
                         completed_sequences[line_number] = []
                         sequences.pop(line_number, None)
                     num_sequences_completed += len(zero_length_sequences)
-                    pbar.update(len(zero_length_sequences))
+                    if pbar is not None:
+                        pbar.update(len(zero_length_sequences))
                     print(f"processed {len(zero_length_sequences)} zero length sequences")
                     continue
 
@@ -260,16 +266,19 @@ def translate_dataset(
                         completed_sequences[line_number] = best_beam.tokens[1:]
                         sequences.pop(line_number, None)
                         num_sequences_completed += 1
-                        pbar.update(1)
+                        if pbar is not None:
+                            pbar.update(1)
                         continue
 
                     if any((len(beam.tokens) > seq_len) and not beam.ended for beam in info.beams):
                         spillover_sequences[line_number] = info
                         sequences.pop(line_number, None)
                         num_sequences_completed += 1
-                        pbar.update(1)
+                        if pbar is not None:
+                            pbar.update(1)
 
-            pbar.close()
+            if pbar is not None:
+                pbar.close()
             print(f"Total sequences completed: {num_sequences_completed}")
             print(f"Spillover sequences: {len(spillover_sequences)}")
 
