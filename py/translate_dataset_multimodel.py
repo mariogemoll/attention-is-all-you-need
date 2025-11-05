@@ -67,7 +67,7 @@ def translate_and_detokenize_model(
     beam_size: int = 4,
     gpu_id: Optional[int] = None,
     skip_detokenize: bool = False,
-) -> Tuple[str, bool, str]:
+) -> Tuple[str, bool, str, float]:
     """
     Translate dataset using a model and optionally detokenize the result.
 
@@ -81,8 +81,9 @@ def translate_and_detokenize_model(
         skip_detokenize: Whether to skip detokenization
 
     Returns:
-        Tuple of (model_name, success, output_path)
+        Tuple of (model_name, success, output_path, duration)
     """
+    start_time = time.time()
     model_name = os.path.splitext(os.path.basename(model_path))[0]
 
     # Create model-specific output directory
@@ -139,7 +140,8 @@ def translate_and_detokenize_model(
         if not translation_success:
             if gpu_id != 0 and result.stderr:
                 print(f"Error translating with {model_name}: {result.stderr}")
-            return (model_name, False, output_dataset)
+            duration = time.time() - start_time
+            return (model_name, False, output_dataset, duration)
 
         # Step 2: Detokenization (if not skipped)
         if not skip_detokenize:
@@ -151,14 +153,17 @@ def translate_and_detokenize_model(
                 print(f"Warning: Detokenization failed for {model_name}: {e}")
                 # Don't fail the whole process if detokenization fails
 
-        return (model_name, True, output_dataset)
+        duration = time.time() - start_time
+        return (model_name, True, output_dataset, duration)
 
     except subprocess.TimeoutExpired:
         print(f"Timeout translating with {model_name}")
-        return (model_name, False, output_dataset)
+        duration = time.time() - start_time
+        return (model_name, False, output_dataset, duration)
     except Exception as e:
         print(f"Exception translating with {model_name}: {e}")
-        return (model_name, False, output_dataset)
+        duration = time.time() - start_time
+        return (model_name, False, output_dataset, duration)
 
 
 def main() -> None:
@@ -300,12 +305,10 @@ def main() -> None:
     print()  # Add spacing for cleaner output
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all translation tasks with start times
+        # Submit all translation tasks
         future_to_task = {}
-        task_start_times = {}
 
         for model_path, input_dataset, output_dir, beam_size, gpu_id in translation_tasks:
-            task_start = time.time()
             future = executor.submit(
                 translate_and_detokenize_model,
                 model_path,
@@ -317,7 +320,6 @@ def main() -> None:
                 args.no_detokenize,
             )
             future_to_task[future] = (model_path, gpu_id)
-            task_start_times[future] = task_start
 
         # Process completed futures without top-level progress bar
         completed_count = 0
@@ -325,10 +327,9 @@ def main() -> None:
         for future in concurrent.futures.as_completed(future_to_task):
             model_path, gpu_id = future_to_task[future]
             task_end = time.time()
-            model_duration = task_end - task_start_times[future]
 
             try:
-                model_name, success, output_dataset = future.result()
+                model_name, success, output_dataset, model_duration = future.result()
                 translation_results.append((model_name, success, output_dataset))
                 completed_count += 1
 
@@ -341,7 +342,6 @@ def main() -> None:
                 # Calculate timing information
                 elapsed_total = task_end - start_time
                 elapsed_str = format_duration(elapsed_total)
-                model_time_str = format_duration(model_duration)
 
                 # Calculate ETA and statistics
                 remaining_models = len(translation_tasks) - completed_count
@@ -360,17 +360,17 @@ def main() -> None:
                     avg_str = "calculating..."
                     total_str = "calculating..."
 
-                # Format model times for display
+                # Format model times statistics for display
                 if model_times:
                     times_display = " | ".join([format_duration(t) for t in model_times])
                 else:
-                    times_display = "none yet"
+                    times_display = format_duration(model_duration)
 
                 # Print completion status and timing info
-                print(f"\n{model_name}: {status}{gpu_info} ({model_time_str})")
+                print(f"\n{model_name}: {status}{gpu_info}")
                 print(f"Progress: {completed_count}/{len(translation_tasks)} models completed")
                 print(f"Elapsed: {elapsed_str} | ETA: {eta_str}")
-                print(f"Model times: {times_display}")
+                print(f"Per-model times: {times_display}")
                 print(f"Average: {avg_str} | Estimated total: {total_str}")
                 print()  # Add spacing for next model
 
@@ -379,9 +379,11 @@ def main() -> None:
                 translation_results.append((model_name, False, ""))
                 completed_count += 1
 
+                # Try to get duration from exception, otherwise use 0
+                model_duration = 0.0
+
                 elapsed_total = task_end - start_time
                 elapsed_str = format_duration(elapsed_total)
-                model_time_str = format_duration(model_duration)
 
                 # Calculate statistics (same as success case)
                 remaining_models = len(translation_tasks) - completed_count
@@ -397,16 +399,16 @@ def main() -> None:
                     avg_str = "calculating..."
                     total_str = "calculating..."
 
-                # Format model times for display
+                # Format model times statistics for display
                 if model_times:
                     times_display = " | ".join([format_duration(t) for t in model_times])
                 else:
-                    times_display = "none yet"
+                    times_display = format_duration(model_duration)
 
-                print(f"\n{model_name}: Exception - {exc} ({model_time_str})")
+                print(f"\n{model_name}: Exception - {exc}")
                 print(f"Progress: {completed_count}/{len(translation_tasks)} models completed")
                 print(f"Elapsed: {elapsed_str} | ETA: {eta_str}")
-                print(f"Model times: {times_display}")
+                print(f"Per-model times: {times_display}")
                 print(f"Average: {avg_str} | Estimated total: {total_str}")
                 print()
 
