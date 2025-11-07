@@ -1,6 +1,7 @@
 import math
 
 import torch
+from huggingface_hub import PyTorchModelHubMixin
 from torch import nn
 
 from params import max_seq_len, num_heads, num_layers, num_model_dims, pad, vocab_size
@@ -40,7 +41,7 @@ class PositionalEncoding(nn.Module):
         return x
 
 
-class Transformer(nn.Module):
+class Transformer(nn.Module, PyTorchModelHubMixin):
     def __init__(self) -> None:
         super().__init__()
         self.encoder = nn.TransformerEncoder(
