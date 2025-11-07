@@ -164,3 +164,10 @@ def detokenize_output(tokenizer: tokenizers.Tokenizer, tokens: torch.Tensor) -> 
             except Exception:
                 words.append(f"<UNK_{token}>")
         return "".join(words)
+
+
+def translate(model: Transformer, tokenizer: tokenizers.Tokenizer, source_text: str) -> str:
+    device = next(model.parameters()).device
+    src_tokens = tokenize_source(tokenizer, source_text)
+    output_tokens = beam_search_decode(model, src_tokens, device=device)
+    return detokenize_output(tokenizer, output_tokens)
